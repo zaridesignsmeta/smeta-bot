@@ -1140,6 +1140,22 @@ async def update_photo_received(msg: Message, state: FSMContext):
     await msg.answer("✅ Foto əlavə edildi. Daha foto göndərin və ya /done yazın.")
 
 
+@router.message(UpdateForm.photos, F.document & F.document.mime_type.startswith("image/"))
+async def update_photo_document_received(msg: Message, state: FSMContext):
+    """Fayl kimi göndərilmiş şəkillər (orijinal keyfiyyət)"""
+    data = await state.get_data()
+    file_id = msg.document.file_id
+    caption = msg.caption or ""
+    await save_photo(
+        data["smeta_number"],
+        data["current_room"],
+        file_id,
+        caption,
+        msg.from_user.id
+    )
+    await msg.answer("✅ Foto əlavə edildi. Daha foto göndərin və ya /done yazın.")
+
+
 @router.message(UpdateForm.photos)
 @router.message(Command("done"), UpdateForm.photos)
 async def update_done(msg: Message, state: FSMContext):
@@ -1283,3 +1299,139 @@ async def group_progress(msg: Message, state: FSMContext, bot: Bot):
         )
     except (ValueError, IndexError):
         await msg.reply("❌ Format: /progress Otaq adı faiz\nMəs: /progress Qonaq otağı 75")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ŞƏKİL ƏLAVƏ ET  (/addphoto)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class PhotoForm(StatesGroup):
+    smeta_select = State()
+    room_select  = State()
+    uploading    = State()
+
+
+def _photo_smeta_kb(smetas: list) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(
+            text=f"📋 {s['smeta_number']} — {s['client_name']}",
+            callback_data=f"aphoto_smeta_{s['smeta_number']}"
+        )]
+        for s in smetas
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _photo_room_kb(rooms: list) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text=f"🏠 {r}", callback_data=f"aphoto_room_{r}")]
+        for r in rooms
+    ]
+    buttons.append([InlineKeyboardButton(text="🏗️ Ümumi", callback_data="aphoto_room_Ümumi")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.message(Command("addphoto"))
+async def cmd_addphoto(msg: Message, state: FSMContext):
+    """Birbaşa şəkil əlavə et: smeta → otaq → şəkil(lər) → /done"""
+    await state.clear()
+    smetas = await get_user_smeta_numbers(msg.from_user.id)
+    if not smetas:
+        await msg.answer("📂 Hələ smeta yoxdur.")
+        return
+    await state.set_state(PhotoForm.smeta_select)
+    await msg.answer(
+        "📸 *Şəkil Əlavə Et*\n\nHansı smetaya şəkil əlavə etmək istəyirsiniz?",
+        parse_mode="Markdown",
+        reply_markup=_photo_smeta_kb(smetas),
+    )
+
+
+@router.callback_query(F.data.startswith("aphoto_smeta_"), PhotoForm.smeta_select)
+async def aphoto_smeta_selected(cq: CallbackQuery, state: FSMContext):
+    smeta_number = cq.data[13:]
+    smeta = await get_smeta_by_number(smeta_number)
+    if not smeta:
+        await cq.answer("Smeta tapılmadı", show_alert=True)
+        return
+    rooms = list(smeta["rooms_data"].keys())
+    await state.update_data(smeta_number=smeta_number, rooms=rooms)
+    await state.set_state(PhotoForm.room_select)
+    await cq.message.edit_text(
+        f"📋 *{smeta_number}* — {smeta['client_name']}\n\n🏠 Hansı otaq üçün şəkil əlavə edilsin?",
+        parse_mode="Markdown",
+        reply_markup=_photo_room_kb(rooms),
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data.startswith("aphoto_room_"), PhotoForm.room_select)
+async def aphoto_room_selected(cq: CallbackQuery, state: FSMContext):
+    room_name = cq.data[12:]
+    await state.update_data(current_room=room_name, photo_count=0)
+    await state.set_state(PhotoForm.uploading)
+    await cq.message.answer(
+        f"🏠 *{room_name}*\n\n"
+        "📸 Şəkil(lər) göndərin.\n"
+        "Bitirdikdə /done yazın.",
+        parse_mode="Markdown",
+    )
+    await cq.answer()
+
+
+@router.message(PhotoForm.uploading, F.photo)
+async def aphoto_photo_received(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    file_id = msg.photo[-1].file_id
+    caption = msg.caption or ""
+    await save_photo(
+        data["smeta_number"],
+        data["current_room"],
+        file_id,
+        caption,
+        msg.from_user.id,
+    )
+    count = data.get("photo_count", 0) + 1
+    await state.update_data(photo_count=count)
+    await msg.answer(f"✅ Şəkil {count} əlavə edildi. Daha göndərin və ya /done yazın.")
+
+
+@router.message(PhotoForm.uploading, F.document & F.document.mime_type.startswith("image/"))
+async def aphoto_document_received(msg: Message, state: FSMContext):
+    """Fayl kimi göndərilmiş şəkillər (orijinal keyfiyyət)"""
+    data = await state.get_data()
+    file_id = msg.document.file_id
+    caption = msg.caption or ""
+    await save_photo(
+        data["smeta_number"],
+        data["current_room"],
+        file_id,
+        caption,
+        msg.from_user.id,
+    )
+    count = data.get("photo_count", 0) + 1
+    await state.update_data(photo_count=count)
+    await msg.answer(f"✅ Şəkil {count} əlavə edildi. Daha göndərin və ya /done yazın.")
+
+
+@router.message(PhotoForm.uploading)
+@router.message(Command("done"), PhotoForm.uploading)
+async def aphoto_done(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    count = data.get("photo_count", 0)
+    smeta_number = data.get("smeta_number", "")
+    room_name = data.get("current_room", "")
+    await state.clear()
+    if count == 0:
+        await msg.answer(
+            "⚠️ Heç şəkil göndərilmədi.",
+            reply_markup=main_menu_kb(msg.from_user.id),
+        )
+        return
+    await msg.answer(
+        f"✅ *{count} şəkil əlavə edildi!*\n"
+        f"📋 Smeta: {smeta_number}\n"
+        f"🏠 Otaq: {room_name}",
+        parse_mode="Markdown",
+        reply_markup=main_menu_kb(msg.from_user.id),
+    )

@@ -8,6 +8,7 @@ import threading
 import os
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -60,6 +61,18 @@ async def main():
 
     await init_db()
     logger.info("✅ Verilənlər bazası hazırdır")
+
+    await bot.set_my_commands([
+        BotCommand(command="start",      description="Başla"),
+        BotCommand(command="newsmeta",   description="Yeni smeta yarat"),
+        BotCommand(command="mysmetas",   description="Smetalarım"),
+        BotCommand(command="update",     description="Gedişat yenilə"),
+        BotCommand(command="addphoto",   description="Şəkil əlavə et"),
+        BotCommand(command="shopping",   description="Alış siyahısı"),
+        BotCommand(command="payment",    description="Ödəniş qeyd et"),
+        BotCommand(command="assign",     description="İşçi təyin et"),
+        BotCommand(command="report",     description="Hesabat"),
+    ])
 
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
