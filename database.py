@@ -9,7 +9,6 @@ from datetime import datetime
 
 DB_PATH = "smeta_bot.db"
 
-
 async def init_db():
     """Cədvəlləri yarat"""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -97,8 +96,38 @@ async def init_db():
             )
         """)
 
-        await db.commit()
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS materials (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                smeta_number TEXT,
+                name         TEXT,
+                unit         TEXT,
+                qty_needed   REAL DEFAULT 0,
+                qty_bought   REAL DEFAULT 0,
+                price        REAL DEFAULT 0,
+                status       TEXT DEFAULT 'pending',
+                notes        TEXT,
+                added_by     INTEGER,
+                created_at   TEXT DEFAULT (datetime('now')),
+                updated_at   TEXT DEFAULT (datetime('now'))
+            )
+        """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS checklist (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                smeta_number TEXT,
+                room_name    TEXT,
+                item         TEXT,
+                is_checked   INTEGER DEFAULT 0,
+                checked_by   INTEGER,
+                checked_at   TEXT,
+                notes        TEXT,
+                created_at   TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        await db.commit()
 
 # ── Smeta funksiyaları ────────────────────────────────────────────────────────
 
@@ -129,7 +158,6 @@ async def save_smeta(data: dict) -> int:
         await db.commit()
         return cursor.lastrowid
 
-
 async def get_smeta(smeta_id: int) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -139,8 +167,7 @@ async def get_smeta(smeta_id: int) -> dict | None:
                 d = dict(row)
                 d["rooms_data"] = json.loads(d["rooms_data"])
                 return d
-    return None
-
+            return None
 
 async def get_user_smetas(telegram_id: int, limit=10) -> list:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -152,7 +179,6 @@ async def get_user_smetas(telegram_id: int, limit=10) -> list:
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
 
-
 async def update_smeta_status(smeta_id: int, status: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -160,7 +186,6 @@ async def update_smeta_status(smeta_id: int, status: str):
             (status, smeta_id)
         )
         await db.commit()
-
 
 async def generate_smeta_number() -> str:
     """SM-2025-0001 formatında nömrə"""
@@ -171,8 +196,7 @@ async def generate_smeta_number() -> str:
             (f"SM-{year}-%",)
         ) as cur:
             count = (await cur.fetchone())[0]
-    return f"SM-{year}-{count + 1:04d}"
-
+        return f"SM-{year}-{count + 1:04d}"
 
 # ── Layihə funksiyaları ───────────────────────────────────────────────────────
 
@@ -192,7 +216,6 @@ async def save_project(data: dict) -> int:
         await db.commit()
         return cursor.lastrowid
 
-
 async def get_active_projects() -> list:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -201,7 +224,6 @@ async def get_active_projects() -> list:
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
 
-
 async def update_project_progress(project_id: int, progress: int, notes: str = ""):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -209,7 +231,6 @@ async def update_project_progress(project_id: int, progress: int, notes: str = "
             (progress, notes, project_id)
         )
         await db.commit()
-
 
 # ── Otaq gedişat funksiyaları ─────────────────────────────────────────────────
 
@@ -224,7 +245,6 @@ async def update_room_progress(smeta_number: str, room_name: str, progress: int,
         """, (smeta_number, room_name, progress, notes, user_id))
         await db.commit()
 
-
 async def get_room_progress(smeta_number: str) -> dict:
     """Smeta üzrə bütün otaqların gedişatı — {room_name: {progress_pct, notes, updated_at}}"""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -235,7 +255,6 @@ async def get_room_progress(smeta_number: str) -> dict:
             rows = await cur.fetchall()
             return {r["room_name"]: dict(r) for r in rows}
 
-
 async def save_photo(smeta_number: str, room_name: str, file_id: str, caption: str = "", user_id: int = 0):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
@@ -243,7 +262,6 @@ async def save_photo(smeta_number: str, room_name: str, file_id: str, caption: s
             VALUES (?, ?, ?, ?, ?)
         """, (smeta_number, room_name, file_id, caption, user_id))
         await db.commit()
-
 
 async def get_photos(smeta_number: str) -> list:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -253,7 +271,6 @@ async def get_photos(smeta_number: str) -> list:
             (smeta_number,)
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
-
 
 async def get_smeta_by_number(smeta_number: str) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -266,8 +283,7 @@ async def get_smeta_by_number(smeta_number: str) -> dict | None:
                 d = dict(row)
                 d["rooms_data"] = json.loads(d["rooms_data"])
                 return d
-    return None
-
+            return None
 
 async def get_user_smeta_numbers(telegram_id: int) -> list:
     """İstifadəçinin son smetalarının nömrələri"""
@@ -278,7 +294,6 @@ async def get_user_smeta_numbers(telegram_id: int) -> list:
             (telegram_id,)
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
-
 
 # ── Qrup funksiyaları ─────────────────────────────────────────────────────────
 
@@ -298,7 +313,6 @@ async def link_group_to_smeta(group_id: int, smeta_number: str):
         """, (group_id, smeta_number))
         await db.commit()
 
-
 async def get_smeta_by_group(group_id: int) -> str | None:
     """Qrup ID-sinə görə smeta nömrəsini tap"""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -311,7 +325,6 @@ async def get_smeta_by_group(group_id: int) -> str | None:
         except Exception:
             return None
 
-
 async def get_group_by_smeta(smeta_number: str) -> int | None:
     """Smeta nömrəsinə görə qrup ID-sini tap"""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -323,3 +336,93 @@ async def get_group_by_smeta(smeta_number: str) -> int | None:
                 return row[0] if row else None
         except Exception:
             return None
+
+# ── Material funksiyaları ─────────────────────────────────────────────────────
+
+async def add_material(smeta_number: str, name: str, unit: str, qty_needed: float, price: float, user_id: int = 0) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO materials (smeta_number, name, unit, qty_needed, price, status, added_by)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        """, (smeta_number, name, unit, qty_needed, price, user_id))
+        await db.commit()
+        return cursor.lastrowid
+
+async def update_material_status(material_id: int, qty_bought: float, status: str, notes: str = ""):
+    """status: pending / bought / delivered"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE materials SET qty_bought=?, status=?, notes=?, updated_at=datetime('now')
+            WHERE id=?
+        """, (qty_bought, status, notes, material_id))
+        await db.commit()
+
+async def get_materials(smeta_number: str) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM materials WHERE smeta_number=? ORDER BY created_at",
+            (smeta_number,)
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+# ── Check-list funksiyaları ───────────────────────────────────────────────────
+
+async def add_checklist_item(smeta_number: str, room_name: str, item: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO checklist (smeta_number, room_name, item)
+            VALUES (?, ?, ?)
+        """, (smeta_number, room_name, item))
+        await db.commit()
+        return cursor.lastrowid
+
+async def check_item(item_id: int, user_id: int, notes: str = ""):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE checklist SET is_checked=1, checked_by=?, checked_at=datetime('now'), notes=?
+            WHERE id=?
+        """, (user_id, notes, item_id))
+        await db.commit()
+
+async def uncheck_item(item_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE checklist SET is_checked=0, checked_by=NULL, checked_at=NULL WHERE id=?",
+            (item_id,)
+        )
+        await db.commit()
+
+async def get_checklist(smeta_number: str) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM checklist WHERE smeta_number=? ORDER BY room_name, created_at",
+            (smeta_number,)
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+async def init_checklist_for_smeta(smeta_number: str, rooms: list):
+    """Smeta yarananda standart check-list maddələri əlavə et"""
+    standard_items = [
+        "Suvaq işləri yoxlanıldı",
+        "Şpatlevka hamar çıxdı",
+        "Boya bərabər vuruldu",
+        "Elektrik xətləri test edildi",
+        "Rozetka/açarlar işləyir",
+        "Santexnika sızdırmırdır",
+        "Döşəmə düz döşəndi",
+        "Tavan işləri tamamlandı",
+        "Kafel/keramogranit düzgün yapışdırıldı",
+        "Qapı açılışları düzgündür",
+        "Pəncərə kənarları hamar çıxdı",
+        "Ümumi təmizlik edildi",
+    ]
+    async with aiosqlite.connect(DB_PATH) as db:
+        for room in rooms:
+            for item in standard_items:
+                await db.execute("""
+                    INSERT OR IGNORE INTO checklist (smeta_number, room_name, item)
+                    VALUES (?, ?, ?)
+                """, (smeta_number, room, item))
+        await db.commit()
