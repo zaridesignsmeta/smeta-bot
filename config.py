@@ -41,9 +41,117 @@ ROOMS = [
     "Mətbəx",
     "Hamam",
     "Tualet",
-    "Koridor / Holll",
+    "Koridor / Hol",
     "Balkon / Terras",
 ]
+
+# ── Obyekt növləri ────────────────────────────────────────────────────────────
+OBJECT_TYPES = {
+    "🏠 Mənzil":           "manзil",
+    "🏡 Villa":             "villa",
+    "🏢 Ofis":              "ofis",
+    "🏪 Ticarət obyekti":  "ticaret",
+    "🏨 Otel / Hostel":    "otel",
+    "🏗️ Digər":            "diger",
+}
+
+# Obyekt növünə görə otaqlar
+OBJECT_ROOMS = {
+    "manзil": [
+        "Qonaq otağı", "Yataq otağı", "Uşaq otağı",
+        "Mətbəx", "Hamam", "Tualet", "Koridor / Hol", "Balkon / Terras",
+    ],
+    "villa": [
+        "Qonaq otağı", "Yataq otağı", "Uşaq otağı", "Master yataq otağı",
+        "Mətbəx", "Hamam", "Tualet", "Koridor / Hol",
+        "Zirzəmi", "Qaraj", "Hovuz otağı", "Terras / Veranda",
+    ],
+    "ofis": [
+        "Açıq iş sahəsi", "Toplantı otağı", "Kabinet",
+        "Resepsion", "Mətbəx / Qəhvəxana", "Hamam / Tualet",
+        "Server otağı", "Anbar",
+    ],
+    "ticaret": [
+        "Satış zalı", "Anbar", "Hamam / Tualet",
+        "Ofis hissəsi", "Texniki otaq",
+    ],
+    "otel": [
+        "Standart otaq", "Lüks otaq", "Süit otaq",
+        "Resepsion / Lobbi", "Restoran / Bar", "Konfrans zalı",
+        "Hamam / Tualet (ümumi)", "Texniki otaq",
+    ],
+    "diger": [
+        "Otaq 1", "Otaq 2", "Otaq 3", "Hamam", "Mətbəx", "Digər sahə",
+    ],
+}
+
+# ── Qiymət kateqoriyaları (işçilik üzrə) ─────────────────────────────────────
+PRICE_CATEGORIES = {
+    "🥈 Standart — 250 AZN/m²": {
+        "key": "standart",
+        "price_per_m2": 250,
+        "multiplier": 1.0,
+        "includes": [
+            "Bütün malyar işləri (suvaq, şpatlevka, boya)",
+            "Alçipan tavan + malyar işləri",
+            "Bütün döşəmə işləri (laminat, kafel, stryajka)",
+            "Bütün elektrik işləri",
+            "Standart santexnika işləri",
+            "Hamam (standart format, max 120x60 keramogranit)",
+            "Ara kəsmələr",
+            "Standart plintus",
+            "Pəncərə kənarları (malyar)",
+            "Qapı hazırlığı (quraşdırma daxil deyil)",
+        ],
+        "excludes": [
+            "Stekloxolst",
+            "Gizli profil / kölgə profil / pərdə boşluğu",
+            "Gizli spotlar",
+            "Böyük format keramogranit (100x300+)",
+            "Gizli plintus",
+            "Ağıllı ev sistemi",
+            "Mühəndis həlləri / layihəsi",
+            "Kondisioner quraşdırması",
+            "Pilləkən işləri",
+            "Balkon / Terras / Qaraj",
+        ],
+    },
+    "🥇 Orta — 350 AZN/m²": {
+        "key": "orta",
+        "price_per_m2": 350,
+        "multiplier": 1.4,
+        "includes": [
+            "Standart kateqoriyanın hər şeyi",
+            "Stekloxolst",
+            "Gizli profil / kölgə profil / pərdə boşluğu",
+            "Gizli spotlar",
+            "Böyük format keramogranit (100x300+)",
+            "Gizli plintus",
+        ],
+        "excludes": [
+            "Ağıllı ev sistemi",
+            "Mühəndis həlləri / layihəsi",
+            "Kondisioner quraşdırması",
+            "Pilləkən işləri",
+            "Balkon / Terras / Qaraj",
+        ],
+    },
+    "💎 Premium — 500 AZN/m²": {
+        "key": "premium",
+        "price_per_m2": 500,
+        "multiplier": 2.0,
+        "includes": [
+            "Orta kateqoriyanın hər şeyi",
+            "Ağıllı ev sistemi",
+            "Mühəndis həlləri / layihəsi",
+        ],
+        "excludes": [
+            "Kondisioner quraşdırması",
+            "Pilləkən işləri",
+            "Balkon / Terras / Qaraj",
+        ],
+    },
+}
 
 # ── İş növləri ────────────────────────────────────────────────────────────────
 WORK_CATEGORIES = {
