@@ -20,7 +20,7 @@ from datetime import datetime
 from config import (
     ADMIN_IDS, ROOMS, WORK_CATEGORIES, CURRENCY,
     DEFAULT_VAT, DEFAULT_MARGIN, DEFAULT_DISCOUNT,
-    COMPANY_NAME
+    COMPANY_NAME, OBJECT_TYPES, OBJECT_ROOMS, PRICE_CATEGORIES
 )
 from database import (
     save_smeta, get_smeta, get_user_smetas,
@@ -37,6 +37,8 @@ router = Router()
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class SmetaForm(StatesGroup):
+    object_type   = State()
+    price_category = State()
     client_name  = State()
     client_phone = State()
     address      = State()
@@ -67,7 +69,18 @@ class UpdateForm(StatesGroup):
 #  Klaviaturalar
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main_menu_kb(user_id: int) -> ReplyKeyboardMarkup:
+def object_type_kb() -> InlineKeyboardMarkup:
+    buttons = []
+    for name in OBJECT_TYPES:
+        buttons.append([InlineKeyboardButton(text=name, callback_data=f"obj_{OBJECT_TYPES[name]}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def price_category_kb() -> InlineKeyboardMarkup:
+    buttons = []
+    for name, data in PRICE_CATEGORIES.items():
+        buttons.append([InlineKeyboardButton(text=name, callback_data=f"price_{data['key']}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
     buttons = [
         [KeyboardButton(text="📋 Yeni Smeta"), KeyboardButton(text="📁 Smetalarım")],
         [KeyboardButton(text="🏗️ Layihələr"),  KeyboardButton(text="📊 Statistika")],
@@ -77,9 +90,11 @@ def main_menu_kb(user_id: int) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
-def rooms_kb(selected_rooms: list) -> InlineKeyboardMarkup:
+def rooms_kb(selected_rooms: list, room_list: list = None) -> InlineKeyboardMarkup:
+    if room_list is None:
+        room_list = ROOMS
     buttons = []
-    for room in ROOMS:
+    for room in room_list:
         count = sum(1 for r in selected_rooms if r == room or r.startswith(f"{room} "))
         if count > 1:
             mark = f"✅ x{count} "
@@ -181,14 +196,63 @@ async def new_smeta_start(msg: Message, state: FSMContext):
         margin_pct=DEFAULT_MARGIN,
         discount_pct=DEFAULT_DISCOUNT,
         vat_pct=DEFAULT_VAT,
+        object_type=None,
+        price_category=None,
     )
-    await state.set_state(SmetaForm.client_name)
+    await state.set_state(SmetaForm.object_type)
     await msg.answer(
         "📋 *Yeni Smeta*\n\n"
-        "👤 Müştərinin adını daxil edin:",
+        "🏗️ Obyekt növünü seçin:",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove()
     )
+    await msg.answer(
+        "Növü seçin:",
+        reply_markup=object_type_kb()
+    )
+
+
+@router.callback_query(F.data.startswith("obj_"), SmetaForm.object_type)
+async def object_type_selected(cq: CallbackQuery, state: FSMContext):
+    obj_key = cq.data[4:]
+    obj_name = next(k for k, v in OBJECT_TYPES.items() if v == obj_key)
+    await state.update_data(object_type=obj_key, object_type_name=obj_name)
+    await state.set_state(SmetaForm.price_category)
+
+    await cq.message.edit_text(
+        f"✅ *{obj_name}* seçildi.\n\n"
+        f"💰 İşçilik qiymət kateqoriyasını seçin:\n\n"
+        f"_(Qiymətlər yalnız işçilik haqqını əhatə edir, materiallar ayrıca hesablanır)_",
+        parse_mode="Markdown",
+        reply_markup=price_category_kb()
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data.startswith("price_"), SmetaForm.price_category)
+async def price_category_selected(cq: CallbackQuery, state: FSMContext):
+    price_key = cq.data[6:]
+    price_data = next(v for v in PRICE_CATEGORIES.values() if v["key"] == price_key)
+    price_name = next(k for k, v in PRICE_CATEGORIES.items() if v["key"] == price_key)
+
+    includes_text = "\n".join([f"  ✅ {i}" for i in price_data["includes"]])
+    excludes_text = "\n".join([f"  ❌ {i}" for i in price_data["excludes"]])
+
+    await state.update_data(
+        price_category=price_key,
+        price_category_name=price_name,
+        price_per_m2=price_data["price_per_m2"],
+        price_multiplier=price_data["multiplier"],
+    )
+    await state.set_state(SmetaForm.client_name)
+    await cq.message.edit_text(
+        f"✅ *{price_name}* seçildi.\n\n"
+        f"*Daxildir:*\n{includes_text}\n\n"
+        f"*Daxil deyil:*\n{excludes_text}",
+        parse_mode="Markdown"
+    )
+    await cq.message.answer("👤 Müştərinin adını daxil edin:")
+    await cq.answer()
 
 
 @router.message(SmetaForm.client_name)
@@ -210,11 +274,16 @@ async def smeta_address(msg: Message, state: FSMContext):
     await state.update_data(address=msg.text.strip())
     await state.set_state(SmetaForm.room_select)
     data = await state.get_data()
+
+    # Obyekt növünə görə otaqlar
+    obj_key = data.get("object_type", "manзil")
+    room_list = OBJECT_ROOMS.get(obj_key, ROOMS)
+
     await msg.answer(
-        "🏠 *Otaqları seçin*\n"
-        "Hansı otaqları smeta daxil etmək istəyirsiniz?",
+        f"🏠 *Otaqları seçin*\n"
+        f"Smetaya daxil ediləcək otaqları seçin:",
         parse_mode="Markdown",
-        reply_markup=rooms_kb(list(data["rooms_data"].keys()))
+        reply_markup=rooms_kb(list(data["rooms_data"].keys()), room_list)
     )
 
 
