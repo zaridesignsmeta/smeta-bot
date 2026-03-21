@@ -1,8 +1,9 @@
-from flask import Flask, render_template_string, abort
+from flask import Flask, render_template_string, Response
 import aiosqlite
 import asyncio
 import json
 import os
+import requests as req_lib
 
 app = Flask(__name__)
 
@@ -13,90 +14,131 @@ TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Smeta {{ smeta.smeta_number }} — Zari Design</title>
 <style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family: 'Segoe UI', Arial, sans-serif; background:#F0F2F5; color:#1a1a2e; }
-  .header { background:#1B2A4A; padding:0; position:sticky; top:0; z-index:100; box-shadow:0 2px 20px rgba(0,0,0,0.3); }
-  .header-inner { max-width:960px; margin:0 auto; padding:18px 24px; display:flex; align-items:center; justify-content:space-between; }
-  .logo-text h1 { color:#fff; font-size:20px; font-weight:700; letter-spacing:2px; }
-  .logo-text p { color:#C9973A; font-size:11px; letter-spacing:3px; text-transform:uppercase; margin-top:2px; }
-  .header-contact { text-align:right; }
-  .header-contact p { color:rgba(255,255,255,0.7); font-size:12px; line-height:1.8; }
-  .header-contact strong { color:#fff; font-size:14px; }
-  .page { max-width:960px; margin:32px auto; padding:0 16px 60px; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Segoe UI',Arial,sans-serif; background:#F0F2F5; color:#1a1a2e; }
 
-  .smeta-hero { background:#fff; border-radius:16px; padding:28px 32px; margin-bottom:24px; box-shadow:0 1px 3px rgba(0,0,0,0.08); display:grid; grid-template-columns:1fr 1fr 1fr; gap:20px; }
-  .hero-field label { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:1px; display:block; margin-bottom:4px; }
-  .hero-field p { font-size:15px; color:#1a1a2e; font-weight:500; }
-  .status-badge { display:inline-flex; align-items:center; gap:6px; padding:6px 14px; border-radius:20px; font-size:12px; font-weight:600; }
-  .status-dot { width:7px; height:7px; border-radius:50%; }
-  .status-draft { background:#FFF3CD; color:#856404; } .status-draft .status-dot { background:#FFC107; }
-  .status-sent { background:#CCE5FF; color:#004085; } .status-sent .status-dot { background:#0D6EFD; }
-  .status-approved { background:#D4EDDA; color:#155724; } .status-approved .status-dot { background:#28A745; }
-  .status-rejected { background:#F8D7DA; color:#721C24; } .status-rejected .status-dot { background:#DC3545; }
+.header { background:#1B2A4A; padding:0; position:sticky; top:0; z-index:100; box-shadow:0 2px 20px rgba(0,0,0,0.3); }
+.header-inner { max-width:960px; margin:0 auto; padding:16px 24px; display:flex; align-items:center; justify-content:space-between; }
+.logo-text h1 { color:#fff; font-size:18px; font-weight:700; letter-spacing:2px; }
+.logo-text p { color:#C9973A; font-size:10px; letter-spacing:3px; text-transform:uppercase; margin-top:2px; }
+.header-contact { text-align:right; }
+.header-contact p { color:rgba(255,255,255,0.6); font-size:11px; line-height:1.8; }
+.header-contact strong { color:#fff; font-size:13px; }
 
-  .section-title { font-size:13px; color:#888; text-transform:uppercase; letter-spacing:1px; margin-bottom:16px; font-weight:600; }
+.page { max-width:960px; margin:0 auto; padding:24px 16px 60px; }
 
-  .room-section { margin-bottom:20px; }
-  .room-header { background:#1B2A4A; color:#fff; padding:14px 24px; border-radius:12px 12px 0 0; font-size:15px; font-weight:600; display:flex; align-items:center; justify-content:space-between; }
-  .room-header::before { content:''; display:inline-block; width:4px; height:18px; background:#C9973A; border-radius:2px; margin-right:10px; }
-  .room-total { color:#C9973A; font-size:14px; }
+.smeta-hero { background:#fff; border-radius:12px; padding:24px 28px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.08); display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; }
+.hero-field label { font-size:10px; color:#888; text-transform:uppercase; letter-spacing:1px; display:block; margin-bottom:3px; }
+.hero-field p { font-size:14px; color:#1a1a2e; font-weight:500; }
+.status-badge { display:inline-flex; align-items:center; gap:5px; padding:5px 12px; border-radius:20px; font-size:11px; font-weight:600; }
+.status-dot { width:6px; height:6px; border-radius:50%; }
+.status-draft { background:#FFF3CD; color:#856404; } .status-draft .status-dot { background:#FFC107; }
+.status-sent { background:#CCE5FF; color:#004085; } .status-sent .status-dot { background:#0D6EFD; }
+.status-approved { background:#D4EDDA; color:#155724; } .status-approved .status-dot { background:#28A745; }
+.status-rejected { background:#F8D7DA; color:#721C24; } .status-rejected .status-dot { background:#DC3545; }
 
-  .progress-bar-wrap { background:#243656; padding:12px 24px; }
-  .progress-label { display:flex; justify-content:space-between; color:rgba(255,255,255,0.7); font-size:12px; margin-bottom:6px; }
-  .progress-track { background:rgba(255,255,255,0.15); border-radius:10px; height:8px; overflow:hidden; }
-  .progress-fill { height:100%; border-radius:10px; background:linear-gradient(90deg, #C9973A, #E8B96A); transition:width 0.5s; }
+.tabs { display:flex; background:#fff; border-radius:12px; padding:6px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.08); gap:4px; }
+.tab { flex:1; padding:10px 8px; text-align:center; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; color:#888; transition:all 0.2s; border:none; background:none; }
+.tab.active { background:#1B2A4A; color:#fff; }
+.tab-content { display:none; }
+.tab-content.active { display:block; }
 
-  .work-table { width:100%; border-collapse:collapse; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
-  .work-table th { background:#F8F9FA; color:#6c757d; font-size:11px; text-transform:uppercase; letter-spacing:0.8px; padding:10px 16px; text-align:left; font-weight:600; border-bottom:1px solid #E9ECEF; }
-  .work-table th:last-child, .work-table td:last-child { text-align:right; }
-  .work-table th:nth-child(3), .work-table th:nth-child(4), .work-table td:nth-child(3), .work-table td:nth-child(4) { text-align:center; }
-  .work-table td { padding:10px 16px; font-size:13px; border-bottom:1px solid #F0F2F5; color:#333; }
-  .work-table tr:last-child td { border-bottom:none; }
-  .work-table tr:hover td { background:#FAFBFC; }
-  .cat-row td { background:#F8F9FA !important; color:#1B2A4A; font-weight:600; font-size:12px; padding:8px 16px; border-bottom:1px solid #E9ECEF !important; }
-  .amount-col { font-weight:600; color:#1B2A4A; }
-  .room-subtotal-row td { background:#EEF0F5 !important; font-weight:700; color:#1B2A4A; border-top:2px solid #DDE1EA !important; }
+.room-section { margin-bottom:16px; }
+.room-header { background:#1B2A4A; color:#fff; padding:12px 20px; border-radius:10px 10px 0 0; font-size:14px; font-weight:600; display:flex; align-items:center; justify-content:space-between; }
+.room-header::before { content:''; display:inline-block; width:3px; height:16px; background:#C9973A; border-radius:2px; margin-right:10px; }
+.room-total { color:#C9973A; font-size:13px; }
 
-  .photos-section { background:#fff; border-radius:0 0 12px 12px; padding:16px; border-top:1px solid #F0F2F5; }
-  .photos-title { font-size:12px; color:#888; text-transform:uppercase; letter-spacing:0.8px; margin-bottom:12px; }
-  .photos-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:8px; }
-  .photo-item { border-radius:8px; overflow:hidden; aspect-ratio:1; background:#F0F2F5; cursor:pointer; }
-  .photo-item img { width:100%; height:100%; object-fit:cover; transition:transform 0.2s; }
-  .photo-item:hover img { transform:scale(1.05); }
-  .photo-caption { font-size:11px; color:#888; margin-top:4px; text-align:center; }
+.progress-wrap { background:#243656; padding:10px 20px; }
+.progress-label { display:flex; justify-content:space-between; color:rgba(255,255,255,0.6); font-size:11px; margin-bottom:5px; }
+.progress-track { background:rgba(255,255,255,0.1); border-radius:10px; height:6px; }
+.progress-fill { height:100%; border-radius:10px; background:linear-gradient(90deg,#C9973A,#E8B96A); }
+.progress-note { color:rgba(255,255,255,0.5); font-size:11px; margin-top:5px; font-style:italic; }
 
-  .lightbox { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:1000; align-items:center; justify-content:center; }
-  .lightbox.active { display:flex; }
-  .lightbox img { max-width:90%; max-height:90%; border-radius:8px; }
-  .lightbox-close { position:absolute; top:20px; right:20px; color:#fff; font-size:30px; cursor:pointer; }
+.work-table { width:100%; border-collapse:collapse; background:#fff; }
+.work-table th { background:#F8F9FA; color:#6c757d; font-size:10px; text-transform:uppercase; letter-spacing:0.8px; padding:9px 14px; text-align:left; font-weight:600; border-bottom:1px solid #E9ECEF; }
+.work-table th:last-child, .work-table td:last-child { text-align:right; }
+.work-table td { padding:9px 14px; font-size:12px; border-bottom:1px solid #F0F2F5; color:#333; }
+.work-table tr:last-child td { border-bottom:none; }
+.work-table tr:hover td { background:#FAFBFC; }
+.cat-row td { background:#F8F9FA !important; color:#1B2A4A; font-weight:600; font-size:11px; padding:7px 14px; }
+.zero-row td { color:#ccc; }
+.amount-col { font-weight:600; color:#1B2A4A; }
+.room-sub td { background:#EEF0F5 !important; font-weight:700; border-top:2px solid #DDE1EA !important; }
 
-  .totals-card { background:#fff; border-radius:16px; padding:28px 32px; margin-top:24px; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
-  .total-line { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid #F0F2F5; font-size:14px; }
-  .total-line:last-of-type { border-bottom:none; }
-  .total-line span:first-child { color:#666; }
-  .total-line span:last-child { font-weight:600; color:#1a1a2e; }
-  .grand-total-box { background:#1B2A4A; border-radius:12px; padding:20px 24px; margin-top:20px; display:flex; justify-content:space-between; align-items:center; }
-  .grand-total-box .label { color:rgba(255,255,255,0.7); font-size:13px; text-transform:uppercase; letter-spacing:1px; }
-  .grand-total-box .amount { color:#fff; font-size:28px; font-weight:700; }
-  .grand-total-box .currency { color:#C9973A; font-size:16px; margin-left:6px; }
-  .notes-box { background:#FFFBF0; border-left:3px solid #C9973A; border-radius:0 8px 8px 0; padding:14px 18px; margin-top:20px; font-size:13px; color:#666; }
-  .footer { text-align:center; margin-top:48px; color:#aaa; font-size:12px; }
-  .footer strong { color:#C9973A; }
-  @media (max-width:640px) {
-    .smeta-hero { grid-template-columns:1fr 1fr; }
-    .header-contact { display:none; }
-    .grand-total-box .amount { font-size:22px; }
-  }
+.photos-wrap { background:#fff; padding:14px; border-radius:0 0 10px 10px; border-top:1px solid #F0F2F5; }
+.photos-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(100px,1fr)); gap:6px; margin-top:8px; }
+.photo-item { border-radius:6px; overflow:hidden; aspect-ratio:1; cursor:pointer; }
+.photo-item img { width:100%; height:100%; object-fit:cover; }
+
+.totals-card { background:#fff; border-radius:12px; padding:24px 28px; margin-top:16px; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+.total-line { display:flex; justify-content:space-between; padding:9px 0; border-bottom:1px solid #F0F2F5; font-size:13px; }
+.total-line:last-of-type { border-bottom:none; }
+.total-line span:first-child { color:#666; }
+.total-line span:last-child { font-weight:600; }
+.grand-box { background:#1B2A4A; border-radius:10px; padding:18px 22px; margin-top:16px; display:flex; justify-content:space-between; align-items:center; }
+.grand-box .lbl { color:rgba(255,255,255,0.6); font-size:12px; text-transform:uppercase; letter-spacing:1px; }
+.grand-box .amt { color:#fff; font-size:26px; font-weight:700; }
+.grand-box .cur { color:#C9973A; font-size:14px; margin-left:5px; }
+
+.progress-cards { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.prog-card { background:#fff; border-radius:10px; padding:16px 18px; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+.prog-card h4 { font-size:13px; color:#1B2A4A; margin-bottom:10px; font-weight:600; }
+.prog-card-bar { background:#F0F2F5; border-radius:6px; height:8px; margin-bottom:6px; }
+.prog-card-fill { height:100%; border-radius:6px; background:linear-gradient(90deg,#1B2A4A,#C9973A); }
+.prog-pct { font-size:20px; font-weight:700; color:#1B2A4A; }
+.prog-note { font-size:11px; color:#888; margin-top:4px; }
+.next-step { background:#FFFBF0; border-left:3px solid #C9973A; padding:8px 12px; border-radius:0 6px 6px 0; font-size:12px; color:#666; margin-top:8px; }
+
+.mat-list { background:#fff; border-radius:10px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+.mat-item { display:flex; align-items:center; padding:12px 16px; border-bottom:1px solid #F0F2F5; gap:12px; }
+.mat-item:last-child { border-bottom:none; }
+.mat-icon { width:32px; height:32px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; }
+.mat-bought { background:#D4EDDA; }
+.mat-pending { background:#FFF3CD; }
+.mat-missing { background:#F8D7DA; }
+.mat-info { flex:1; }
+.mat-name { font-size:13px; font-weight:600; color:#1a1a2e; }
+.mat-detail { font-size:11px; color:#888; margin-top:2px; }
+.mat-status { font-size:11px; font-weight:600; padding:3px 8px; border-radius:10px; }
+.st-bought { background:#D4EDDA; color:#155724; }
+.st-pending { background:#FFF3CD; color:#856404; }
+.st-missing { background:#F8D7DA; color:#721C24; }
+.mat-empty { text-align:center; padding:40px; color:#aaa; font-size:13px; }
+
+.check-room { margin-bottom:16px; }
+.check-room-title { font-size:13px; font-weight:700; color:#1B2A4A; padding:10px 16px; background:#fff; border-radius:8px 8px 0 0; border-bottom:1px solid #F0F2F5; }
+.check-items { background:#fff; border-radius:0 0 8px 8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+.check-item { display:flex; align-items:center; padding:10px 16px; border-bottom:1px solid #F0F2F5; gap:10px; }
+.check-item:last-child { border-bottom:none; }
+.check-box { width:20px; height:20px; border-radius:5px; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:12px; }
+.checked { background:#D4EDDA; color:#155724; }
+.unchecked { background:#F0F2F5; color:#aaa; }
+.check-text { font-size:13px; flex:1; }
+.check-text.done { color:#888; text-decoration:line-through; }
+.check-meta { font-size:10px; color:#aaa; }
+
+.notes-box { background:#FFFBF0; border-left:3px solid #C9973A; border-radius:0 6px 6px 0; padding:12px 16px; margin-top:16px; font-size:12px; color:#666; }
+.footer { text-align:center; margin-top:40px; color:#aaa; font-size:11px; }
+.footer strong { color:#C9973A; }
+
+.lightbox { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.92); z-index:1000; align-items:center; justify-content:center; }
+.lightbox.open { display:flex; }
+.lightbox img { max-width:92%; max-height:88%; border-radius:8px; }
+.lb-close { position:absolute; top:18px; right:18px; color:#fff; font-size:28px; cursor:pointer; }
+
+@media(max-width:640px){
+.smeta-hero { grid-template-columns:1fr 1fr; }
+.header-contact { display:none; }
+.progress-cards { grid-template-columns:1fr; }
+.tab { font-size:10px; padding:8px 4px; }
+}
 </style>
 </head>
 <body>
 
 <div class="header">
   <div class="header-inner">
-    <div class="logo-text">
-      <h1>ZARI DESIGN</h1>
-      <p>Təmir Smetası</p>
-    </div>
+    <div class="logo-text"><h1>ZARI DESIGN</h1><p>Təmir Smetası</p></div>
     <div class="header-contact">
       <strong>+994 50 444 09 00</strong>
       <p>3 Mərkəzi bulvar küçəsi, Bakı</p>
@@ -120,120 +162,248 @@ TEMPLATE = """<!DOCTYPE html>
     <div class="hero-field"><label>Ünvan</label><p>{{ smeta.address }}</p></div>
   </div>
 
-  {% set ns = namespace(counter=1) %}
-  {% for room, categories in rooms.items() %}
-  {% set room_total = namespace(val=0) %}
-  {% for cat, items in categories.items() %}
-  {% for item in items %}{% set room_total.val = room_total.val + item.qty * item.price %}{% endfor %}
-  {% endfor %}
-  {% set progress = progress_data.get(room, {}).get('progress_pct', 0) %}
-  {% set room_photos = photos_by_room.get(room, []) %}
-
-  <div class="room-section">
-    <div class="room-header">
-      <span>{{ room }}</span>
-      <span class="room-total">{{ "%.2f"|format(room_total.val) }} AZN</span>
-    </div>
-
-    <div class="progress-bar-wrap">
-      <div class="progress-label">
-        <span>İş gedişatı</span>
-        <span>{{ progress }}%</span>
-      </div>
-      <div class="progress-track">
-        <div class="progress-fill" style="width:{{ progress }}%"></div>
-      </div>
-    </div>
-
-    <table class="work-table">
-      <thead><tr>
-        <th style="width:44px">№</th>
-        <th>İşin adı</th>
-        <th style="width:80px">Ölçü</th>
-        <th style="width:80px">Miqdar</th>
-        <th style="width:110px">Qiymət (AZN)</th>
-        <th style="width:120px">Məbləğ (AZN)</th>
-      </tr></thead>
-      <tbody>
-        {% for cat, items in categories.items() %}
-        {% if items %}
-        <tr class="cat-row"><td colspan="6">{{ cat }}</td></tr>
-        {% for item in items %}
-        <tr>
-          <td style="color:#aaa">{{ ns.counter }}</td>
-          <td>{{ item.name }}</td>
-          <td style="text-align:center">{{ item.unit }}</td>
-          <td style="text-align:center">{{ item.qty }}</td>
-          <td style="text-align:right">{{ "%.2f"|format(item.price) }}</td>
-          <td class="amount-col">{{ "%.2f"|format(item.qty * item.price) }}</td>
-        </tr>
-        {% set ns.counter = ns.counter + 1 %}
-        {% endfor %}
-        {% endif %}
-        {% endfor %}
-        <tr class="room-subtotal-row">
-          <td colspan="5" style="text-align:right; padding-right:16px;">{{ room }} cəmi:</td>
-          <td>{{ "%.2f"|format(room_total.val) }} AZN</td>
-        </tr>
-      </tbody>
-    </table>
-
-    {% if room_photos %}
-    <div class="photos-section">
-      <div class="photos-title">📸 Fotolar ({{ room_photos|length }})</div>
-      <div class="photos-grid">
-        {% for photo in room_photos %}
-        <div class="photo-item" onclick="openLightbox('{{ photo.file_id }}')">
-          <img src="/photo/{{ photo.file_id }}" alt="{{ photo.caption }}" loading="lazy">
-        </div>
-        {% if photo.caption %}
-        <div class="photo-caption">{{ photo.caption }}</div>
-        {% endif %}
-        {% endfor %}
-      </div>
-    </div>
-    {% endif %}
-
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('smeta',this)">📋 Smeta</button>
+    <button class="tab" onclick="showTab('gedishat',this)">🏗️ Gedişat</button>
+    <button class="tab" onclick="showTab('material',this)">📦 Materiallar</button>
+    <button class="tab" onclick="showTab('checklist',this)">✅ Yoxlama</button>
   </div>
-  {% endfor %}
 
-  <div class="totals-card">
-    <h3 class="section-title">Hesablama</h3>
-    <div class="total-line"><span>İşçilik və işlər</span><span>{{ "%.2f"|format(smeta.total) }} AZN</span></div>
-    {% if smeta.discount_pct > 0 %}
-    {% set discount = smeta.total * smeta.discount_pct / 100 %}
-    <div class="total-line" style="color:#28a745"><span>Endirim ({{ smeta.discount_pct }}%)</span><span>−{{ "%.2f"|format(discount) }} AZN</span></div>
-    {% endif %}
-    <div class="grand-total-box">
-      <div class="label">Yekun məbləğ</div>
-      <div><span class="amount">{{ "%.2f"|format(smeta.total) }}</span><span class="currency">AZN</span></div>
+  <!-- TAB 1: SMETA -->
+  <div id="tab-smeta" class="tab-content active">
+    {% set ns = namespace(counter=1) %}
+    {% for room, categories in rooms.items() %}
+    {% set room_total = namespace(val=0) %}
+    {% for cat, items in categories.items() %}{% for item in items %}{% set room_total.val = room_total.val + item.qty * item.price %}{% endfor %}{% endfor %}
+    {% set progress = progress_data.get(room, {}).get('progress_pct', 0) %}
+
+    <div class="room-section">
+      <div class="room-header">
+        <span>{{ room }}</span>
+        <span class="room-total">{{ "%.2f"|format(room_total.val) }} AZN</span>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-label"><span>Gedişat</span><span>{{ progress }}%</span></div>
+        <div class="progress-track"><div class="progress-fill" style="width:{{ progress }}%"></div></div>
+      </div>
+      <table class="work-table">
+        <thead><tr>
+          <th style="width:36px">№</th><th>İşin adı</th>
+          <th style="width:70px">Ölçü</th><th style="width:70px">Miqdar</th>
+          <th style="width:100px">Qiymət</th><th style="width:110px">Məbləğ</th>
+        </tr></thead>
+        <tbody>
+          {% for cat, items in categories.items() %}
+          {% set has_items = [] %}{% for i in items %}{% if i.qty > 0 %}{% set _ = has_items.append(1) %}{% endif %}{% endfor %}
+          {% if has_items or items %}
+          <tr class="cat-row"><td colspan="6">{{ cat }}</td></tr>
+          {% for item in items %}
+          <tr class="{{ 'zero-row' if item.qty == 0 else '' }}">
+            <td style="color:#aaa">{{ ns.counter }}</td>
+            <td>{{ item.name }}</td>
+            <td style="text-align:center">{{ item.unit }}</td>
+            <td style="text-align:center">{{ item.qty }}</td>
+            <td style="text-align:right">{{ "%.2f"|format(item.price) }}</td>
+            <td class="amount-col">{{ "%.2f"|format(item.qty * item.price) }}</td>
+          </tr>
+          {% set ns.counter = ns.counter + 1 %}
+          {% endfor %}
+          {% endif %}
+          {% endfor %}
+          <tr class="room-sub">
+            <td colspan="5" style="text-align:right;padding-right:14px">{{ room }} cəmi:</td>
+            <td>{{ "%.2f"|format(room_total.val) }} AZN</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
-    {% if smeta.notes %}
-    <div class="notes-box">📝 {{ smeta.notes }}</div>
+    {% endfor %}
+
+    <div class="totals-card">
+      <div class="total-line"><span>İşçilik və işlər</span><span>{{ "%.2f"|format(smeta.total) }} AZN</span></div>
+      {% if smeta.discount_pct > 0 %}
+      <div class="total-line" style="color:#28a745"><span>Endirim ({{ smeta.discount_pct }}%)</span><span>−{{ "%.2f"|format(smeta.total * smeta.discount_pct / 100) }} AZN</span></div>
+      {% endif %}
+      <div class="grand-box">
+        <div class="lbl">Yekun məbləğ</div>
+        <div><span class="amt">{{ "%.2f"|format(smeta.total) }}</span><span class="cur">AZN</span></div>
+      </div>
+      {% if smeta.notes %}<div class="notes-box">📝 {{ smeta.notes }}</div>{% endif %}
+    </div>
+  </div>
+
+  <!-- TAB 2: GEDİŞAT -->
+  <div id="tab-gedishat" class="tab-content">
+    <div class="progress-cards">
+      {% for room in rooms %}
+      {% set prog = progress_data.get(room, {}) %}
+      {% set pct = prog.get('progress_pct', 0) %}
+      {% set note = prog.get('notes', '') %}
+      <div class="prog-card">
+        <h4>{{ room }}</h4>
+        <div class="prog-card-bar"><div class="prog-card-fill" style="width:{{ pct }}%"></div></div>
+        <div class="prog-pct">{{ pct }}%</div>
+        {% if note %}<div class="prog-note">{{ note }}</div>{% endif %}
+        {% if pct < 100 and note %}
+        <div class="next-step">▶️ Növbəti: {{ note }}</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    {% set total_pct = namespace(val=0) %}
+    {% for room in rooms %}{% set total_pct.val = total_pct.val + progress_data.get(room, {}).get('progress_pct', 0) %}{% endfor %}
+    {% set avg_pct = (total_pct.val / rooms|length) if rooms else 0 %}
+
+    <div class="totals-card" style="margin-top:16px">
+      <div class="total-line"><span>Ümumi tamamlanma</span><span style="color:#1B2A4A;font-size:18px;font-weight:700">{{ "%.0f"|format(avg_pct) }}%</span></div>
+      <div class="progress-track" style="margin-top:8px;height:10px">
+        <div class="progress-fill" style="width:{{ avg_pct }}%;height:100%"></div>
+      </div>
+    </div>
+
+    {% if photos_by_room %}
+    <div class="totals-card" style="margin-top:16px">
+      <p style="font-size:12px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px">📸 Fotolar</p>
+      {% for room, photos in photos_by_room.items() %}
+      {% if photos %}
+      <p style="font-size:12px;font-weight:600;color:#1B2A4A;margin-bottom:6px">{{ room }}</p>
+      <div class="photos-grid" style="margin-bottom:12px">
+        {% for photo in photos %}
+        <div class="photo-item" onclick="openLB('{{ photo.file_id }}')">
+          <img src="/photo/{{ photo.file_id }}" alt="" loading="lazy">
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- TAB 3: MATERIALLAR -->
+  <div id="tab-material" class="tab-content">
+    {% if materials %}
+    {% set bought = materials|selectattr('status','eq','bought')|list %}
+    {% set pending = materials|selectattr('status','eq','pending')|list %}
+    {% set delivered = materials|selectattr('status','eq','delivered')|list %}
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">
+      <div style="background:#D4EDDA;border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:#155724">{{ bought|length }}</div>
+        <div style="font-size:11px;color:#155724">Alınıb</div>
+      </div>
+      <div style="background:#FFF3CD;border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:#856404">{{ pending|length }}</div>
+        <div style="font-size:11px;color:#856404">Gözləyir</div>
+      </div>
+      <div style="background:#F8D7DA;border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:#721C24">{{ delivered|length }}</div>
+        <div style="font-size:11px;color:#721C24">Çatdırılıb</div>
+      </div>
+    </div>
+
+    <div class="mat-list">
+      {% for mat in materials %}
+      <div class="mat-item">
+        <div class="mat-icon {{ 'mat-bought' if mat.status == 'bought' else ('mat-pending' if mat.status == 'pending' else 'mat-missing') }}">
+          {{ '✅' if mat.status == 'bought' else ('⏳' if mat.status == 'pending' else '🚚') }}
+        </div>
+        <div class="mat-info">
+          <div class="mat-name">{{ mat.name }}</div>
+          <div class="mat-detail">{{ mat.qty_needed }} {{ mat.unit }} · {{ "%.2f"|format(mat.price) }} AZN{% if mat.notes %} · {{ mat.notes }}{% endif %}</div>
+        </div>
+        <span class="mat-status {{ 'st-bought' if mat.status == 'bought' else ('st-pending' if mat.status == 'pending' else 'st-missing') }}">
+          {{ 'Alındı' if mat.status == 'bought' else ('Gözləyir' if mat.status == 'pending' else 'Çatdırıldı') }}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="mat-empty">
+      <div style="font-size:40px;margin-bottom:12px">📦</div>
+      <p>Hələ material əlavə edilməyib</p>
+      <p style="margin-top:6px;font-size:11px">Bot vasitəsilə material əlavə edin</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- TAB 4: YOXLAMA -->
+  <div id="tab-checklist" class="tab-content">
+    {% if checklist_by_room %}
+    {% set total_items = namespace(val=0) %}
+    {% set checked_items = namespace(val=0) %}
+    {% for room, items in checklist_by_room.items() %}
+    {% for item in items %}
+    {% set total_items.val = total_items.val + 1 %}
+    {% if item.is_checked %}{% set checked_items.val = checked_items.val + 1 %}{% endif %}
+    {% endfor %}
+    {% endfor %}
+
+    <div style="background:#fff;border-radius:10px;padding:16px 20px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:13px;color:#666">Yoxlanılıb</span>
+        <span style="font-size:18px;font-weight:700;color:#1B2A4A">{{ checked_items.val }}/{{ total_items.val }}</span>
+      </div>
+      <div class="progress-track" style="margin-top:8px;height:8px">
+        <div class="progress-fill" style="width:{{ (checked_items.val / total_items.val * 100) if total_items.val > 0 else 0 }}%;height:100%"></div>
+      </div>
+    </div>
+
+    {% for room, items in checklist_by_room.items() %}
+    <div class="check-room">
+      <div class="check-room-title">🏠 {{ room }}</div>
+      <div class="check-items">
+        {% for item in items %}
+        <div class="check-item">
+          <div class="check-box {{ 'checked' if item.is_checked else 'unchecked' }}">
+            {{ '✓' if item.is_checked else '' }}
+          </div>
+          <div style="flex:1">
+            <div class="check-text {{ 'done' if item.is_checked else '' }}">{{ item.item }}</div>
+            {% if item.is_checked and item.checked_at %}
+            <div class="check-meta">{{ item.checked_at[:10] }}{% if item.notes %} · {{ item.notes }}{% endif %}</div>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="mat-empty">
+      <div style="font-size:40px;margin-bottom:12px">✅</div>
+      <p>Hələ check-list əlavə edilməyib</p>
+    </div>
     {% endif %}
   </div>
 
   <div class="footer">
     <p>Bu smeta <strong>Zari Design</strong> tərəfindən hazırlanmışdır</p>
-    <p style="margin-top:4px">+994 50 444 09 00 · 3 Mərkəzi bulvar küçəsi, Bakı</p>
+    <p style="margin-top:3px">+994 50 444 09 00 · 3 Mərkəzi bulvar küçəsi, Bakı</p>
   </div>
 
 </div>
 
-<div class="lightbox" id="lightbox" onclick="closeLightbox()">
-  <span class="lightbox-close">×</span>
-  <img id="lightbox-img" src="" alt="">
+<div class="lightbox" id="lb" onclick="closeLB()">
+  <span class="lb-close">×</span>
+  <img id="lb-img" src="" alt="">
 </div>
 
 <script>
-function openLightbox(fileId) {
-  document.getElementById('lightbox-img').src = '/photo/' + fileId;
-  document.getElementById('lightbox').classList.add('active');
+function showTab(name, el) {
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  el.classList.add('active');
 }
-function closeLightbox() {
-  document.getElementById('lightbox').classList.remove('active');
+function openLB(id) {
+  document.getElementById('lb-img').src = '/photo/' + id;
+  document.getElementById('lb').classList.add('open');
 }
+function closeLB() { document.getElementById('lb').classList.remove('open'); }
 </script>
+
 </body>
 </html>"""
 
@@ -244,7 +414,6 @@ async def get_data_async(smeta_number):
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
 
-        # Smeta
         async with db.execute("SELECT * FROM smetas WHERE smeta_number=?", (smeta_number,)) as cur:
             row = await cur.fetchone()
             if not row:
@@ -253,7 +422,6 @@ async def get_data_async(smeta_number):
             d["rooms_data"] = json.loads(d["rooms_data"])
             result["smeta"] = d
 
-        # Progress
         progress = {}
         try:
             async with db.execute("SELECT * FROM room_progress WHERE smeta_number=?", (smeta_number,)) as cur:
@@ -264,24 +432,48 @@ async def get_data_async(smeta_number):
             pass
         result["progress"] = progress
 
-        # Photos
-        photos = []
+        photos_by_room = {}
         try:
             async with db.execute(
                 "SELECT * FROM smeta_photos WHERE smeta_number=? ORDER BY created_at DESC",
                 (smeta_number,)
             ) as cur:
-                photos = [dict(r) for r in await cur.fetchall()]
+                for row in await cur.fetchall():
+                    p = dict(row)
+                    room = p.get("room_name", "Ümumi")
+                    if room not in photos_by_room:
+                        photos_by_room[room] = []
+                    photos_by_room[room].append(p)
         except Exception:
             pass
-
-        photos_by_room = {}
-        for p in photos:
-            room = p.get("room_name", "Ümumi")
-            if room not in photos_by_room:
-                photos_by_room[room] = []
-            photos_by_room[room].append(p)
         result["photos_by_room"] = photos_by_room
+
+        materials = []
+        try:
+            async with db.execute(
+                "SELECT * FROM materials WHERE smeta_number=? ORDER BY created_at",
+                (smeta_number,)
+            ) as cur:
+                materials = [dict(r) for r in await cur.fetchall()]
+        except Exception:
+            pass
+        result["materials"] = materials
+
+        checklist_by_room = {}
+        try:
+            async with db.execute(
+                "SELECT * FROM checklist WHERE smeta_number=? ORDER BY room_name, created_at",
+                (smeta_number,)
+            ) as cur:
+                for row in await cur.fetchall():
+                    item = dict(row)
+                    room = item.get("room_name", "Ümumi")
+                    if room not in checklist_by_room:
+                        checklist_by_room[room] = []
+                    checklist_by_room[room].append(item)
+        except Exception:
+            pass
+        result["checklist_by_room"] = checklist_by_room
 
     return result
 
@@ -296,20 +488,19 @@ def view_smeta(smeta_number):
         smeta=data["smeta"],
         rooms=data["smeta"]["rooms_data"],
         progress_data=data["progress"],
-        photos_by_room=data["photos_by_room"]
+        photos_by_room=data["photos_by_room"],
+        materials=data["materials"],
+        checklist_by_room=data["checklist_by_room"],
     )
 
 
 @app.route("/photo/<file_id>")
 def get_photo(file_id):
-    """Telegram foto linki — bot vasitəsilə yüklənir"""
-    import requests
     bot_token = os.getenv("BOT_TOKEN", "")
     try:
-        r = requests.get(f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}", timeout=5)
+        r = req_lib.get(f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}", timeout=5)
         file_path = r.json()["result"]["file_path"]
-        photo = requests.get(f"https://api.telegram.org/file/bot{bot_token}/{file_path}", timeout=10)
-        from flask import Response
+        photo = req_lib.get(f"https://api.telegram.org/file/bot{bot_token}/{file_path}", timeout=10)
         return Response(photo.content, mimetype="image/jpeg")
     except Exception:
         return "", 404
