@@ -25,7 +25,10 @@ from config import (
 from database import (
     save_smeta, get_smeta, get_user_smetas,
     update_smeta_status, generate_smeta_number,
-    save_project, get_active_projects, update_project_progress
+    save_project, get_active_projects, update_project_progress,
+    update_room_progress, get_room_progress, save_photo, get_photos,
+    get_smeta_by_number, get_user_smeta_numbers,
+    link_group_to_smeta, get_smeta_by_group, get_group_by_smeta
 )
 from generators import generate_excel, generate_pdf
 
@@ -847,3 +850,281 @@ async def cancel_smeta(cq: CallbackQuery, state: FSMContext):
         reply_markup=main_menu_kb(cq.from_user.id)
     )
     await cq.answer()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  GEDİŞAT YENİLƏMƏ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class UpdateForm(StatesGroup):
+    smeta_number  = State()
+    room_select   = State()
+    progress      = State()
+    notes         = State()
+    photos        = State()
+
+
+def smeta_select_kb(smetas: list) -> InlineKeyboardMarkup:
+    buttons = []
+    for s in smetas:
+        buttons.append([InlineKeyboardButton(
+            text=f"📋 {s['smeta_number']} — {s['client_name']}",
+            callback_data=f"upd_smeta_{s['smeta_number']}"
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def room_select_update_kb(rooms: list, progress_data: dict) -> InlineKeyboardMarkup:
+    buttons = []
+    for room in rooms:
+        pct = progress_data.get(room, {}).get("progress_pct", 0)
+        bar = "█" * (pct // 20) + "░" * (5 - pct // 20)
+        buttons.append([InlineKeyboardButton(
+            text=f"{bar} {room} ({pct}%)",
+            callback_data=f"upd_room_{room}"
+        )])
+    buttons.append([InlineKeyboardButton(text="✅ Bitir", callback_data="upd_done")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.message(Command("update"))
+async def cmd_update(msg: Message, state: FSMContext):
+    await state.clear()
+    smetas = await get_user_smeta_numbers(msg.from_user.id)
+    if not smetas:
+        await msg.answer("📂 Hələ smeta yoxdur.")
+        return
+    await state.set_state(UpdateForm.smeta_number)
+    await msg.answer(
+        "📊 *Gedişat Yeniləmə*\n\nHansı smetanı yeniləmək istəyirsiniz?",
+        parse_mode="Markdown",
+        reply_markup=smeta_select_kb(smetas)
+    )
+
+
+@router.callback_query(F.data.startswith("upd_smeta_"), UpdateForm.smeta_number)
+async def update_smeta_selected(cq: CallbackQuery, state: FSMContext):
+    smeta_number = cq.data[10:]
+    smeta = await get_smeta_by_number(smeta_number)
+    if not smeta:
+        await cq.answer("Smeta tapılmadı", show_alert=True)
+        return
+
+    rooms = list(smeta["rooms_data"].keys())
+    progress_data = await get_room_progress(smeta_number)
+
+    await state.update_data(smeta_number=smeta_number, rooms=rooms)
+    await state.set_state(UpdateForm.room_select)
+    await cq.message.edit_text(
+        f"📋 *{smeta_number}* — {smeta['client_name']}\n"
+        f"📍 {smeta['address']}\n\n"
+        f"🏠 Hansı otağı yeniləmək istəyirsiniz?",
+        parse_mode="Markdown",
+        reply_markup=room_select_update_kb(rooms, progress_data)
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data.startswith("upd_room_"), UpdateForm.room_select)
+async def update_room_selected(cq: CallbackQuery, state: FSMContext):
+    room = cq.data[9:]
+    await state.update_data(current_room=room)
+    await state.set_state(UpdateForm.progress)
+    await cq.message.answer(
+        f"🏠 *{room}*\n\n"
+        f"Hazırlıq faizini daxil edin (0-100):\n"
+        f"_(məs: 50, 75, 100)_",
+        parse_mode="Markdown"
+    )
+    await cq.answer()
+
+
+@router.message(UpdateForm.progress)
+async def update_progress_entered(msg: Message, state: FSMContext):
+    try:
+        pct = int(msg.text.strip())
+        if not 0 <= pct <= 100:
+            raise ValueError
+        await state.update_data(progress=pct)
+        await state.set_state(UpdateForm.notes)
+        await msg.answer(
+            f"✅ *{pct}%* qeyd edildi.\n\n"
+            f"📝 Qeyd yazın (istəyə görə) və ya /skip:\n"
+            f"_(məs: 'Divarlar hazırdır, tavan növbəti həftə')_",
+            parse_mode="Markdown"
+        )
+    except ValueError:
+        await msg.answer("⚠️ 0-100 arasında rəqəm daxil edin")
+
+
+@router.message(UpdateForm.notes)
+@router.message(Command("skip"), UpdateForm.notes)
+async def update_notes_entered(msg: Message, state: FSMContext):
+    notes = "" if msg.text == "/skip" else msg.text.strip()
+    await state.update_data(notes=notes)
+    await state.set_state(UpdateForm.photos)
+    await msg.answer(
+        "📸 Foto göndərin (istəyə görə)\n"
+        "Bir neçə foto göndərə bilərsiniz.\n"
+        "Bitirdikdə /done yazın:",
+    )
+
+
+@router.message(UpdateForm.photos, F.photo)
+async def update_photo_received(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    file_id = msg.photo[-1].file_id
+    caption = msg.caption or ""
+    await save_photo(
+        data["smeta_number"],
+        data["current_room"],
+        file_id,
+        caption,
+        msg.from_user.id
+    )
+    await msg.answer("✅ Foto əlavə edildi. Daha foto göndərin və ya /done yazın.")
+
+
+@router.message(UpdateForm.photos)
+@router.message(Command("done"), UpdateForm.photos)
+async def update_done(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    await update_room_progress(
+        data["smeta_number"],
+        data["current_room"],
+        data["progress"],
+        data.get("notes", ""),
+        msg.from_user.id
+    )
+
+    smeta = await get_smeta_by_number(data["smeta_number"])
+    rooms = data.get("rooms", [])
+    progress_data = await get_room_progress(data["smeta_number"])
+
+    await state.set_state(UpdateForm.room_select)
+    await msg.answer(
+        f"✅ *{data['current_room']}* — {data['progress']}% yeniləndi!\n\n"
+        f"Başqa otaq yeniləmək istəyirsiniz?",
+        parse_mode="Markdown",
+        reply_markup=room_select_update_kb(rooms, progress_data)
+    )
+
+
+@router.callback_query(F.data == "upd_done")
+async def update_finish(cq: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    smeta_number = data.get("smeta_number", "")
+    WEB_URL = os.getenv("WEB_URL", "https://smeta-bot-production.up.railway.app")
+    link = f"{WEB_URL}/smeta/{smeta_number}"
+
+    await state.clear()
+    await cq.message.answer(
+        f"✅ *Gedişat yeniləndi!*\n\n"
+        f"🔗 Müştəri linki:\n{link}",
+        parse_mode="Markdown",
+        reply_markup=main_menu_kb(cq.from_user.id)
+    )
+    await cq.answer()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TELEGRAM QRUP SİSTEMİ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.message(Command("linksmeta"))
+async def cmd_linksmeta(msg: Message, bot: Bot):
+    """Qrupu smetaya bağla: /linksmeta SM-2026-0001"""
+    if msg.chat.type not in ("group", "supergroup"):
+        await msg.answer("⚠️ Bu komanda yalnız qrupda istifadə edilir.")
+        return
+
+    parts = msg.text.split()
+    if len(parts) < 2:
+        await msg.answer("❌ Smeta nömrəsi yazın: /linksmeta SM-2026-0001")
+        return
+
+    smeta_number = parts[1].upper()
+    smeta = await get_smeta_by_number(smeta_number)
+    if not smeta:
+        await msg.answer(f"❌ *{smeta_number}* tapılmadı. Nömrəni yoxlayın.")
+        return
+
+    await link_group_to_smeta(msg.chat.id, smeta_number)
+
+    WEB_URL = os.getenv("WEB_URL", "https://smeta-bot-production.up.railway.app")
+    link = f"{WEB_URL}/smeta/{smeta_number}"
+
+    await msg.answer(
+        f"✅ *Bu qrup smetaya bağlandı!*\n\n"
+        f"📋 Smeta: *{smeta_number}*\n"
+        f"👤 Müştəri: {smeta['client_name']}\n"
+        f"📍 Ünvan: {smeta['address']}\n\n"
+        f"📌 *İndi bu qrupda:*\n"
+        f"• Foto göndərin → avtomatik smetaya əlavə olunur\n"
+        f"• Sənəd göndərin → saxlanılır\n"
+        f"• /progress yazın → gedişatı yeniləyin\n\n"
+        f"🔗 Müştəri linki: {link}",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(F.photo & F.chat.type.in_({"group", "supergroup"}))
+async def group_photo_received(msg: Message, bot: Bot):
+    """Qrupda foto gəldikdə avtomatik smetaya əlavə et"""
+    smeta_number = await get_smeta_by_group(msg.chat.id)
+    if not smeta_number:
+        return
+
+    file_id = msg.photo[-1].file_id
+    caption = msg.caption or ""
+    room_name = "Ümumi"
+
+    if caption:
+        smeta = await get_smeta_by_number(smeta_number)
+        if smeta:
+            for room in smeta["rooms_data"].keys():
+                if room.lower() in caption.lower():
+                    room_name = room
+                    break
+
+    await save_photo(smeta_number, room_name, file_id, caption, msg.from_user.id)
+    await msg.reply(
+        f"✅ Foto *{smeta_number}* smetasına əlavə edildi.\n"
+        f"🏠 Otaq: {room_name}",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(Command("progress") & F.chat.type.in_({"group", "supergroup"}))
+async def group_progress(msg: Message, state: FSMContext, bot: Bot):
+    """Qrupda gedişat yenilə: /progress Qonaq otağı 75"""
+    smeta_number = await get_smeta_by_group(msg.chat.id)
+    if not smeta_number:
+        await msg.reply("⚠️ Bu qrup heç bir smetaya bağlı deyil. /linksmeta istifadə edin.")
+        return
+
+    parts = msg.text.split()
+    if len(parts) < 2:
+        smeta = await get_smeta_by_number(smeta_number)
+        progress_data = await get_room_progress(smeta_number)
+        rooms = list(smeta["rooms_data"].keys())
+        lines = [f"📊 *{smeta_number}* — Gedişat:\n"]
+        for room in rooms:
+            pct = progress_data.get(room, {}).get("progress_pct", 0)
+            bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+            lines.append(f"{bar} {room}: {pct}%")
+        lines.append(f"\n_İstifadə: /progress Otaq adı faiz_")
+        lines.append(f"_Məs: /progress Qonaq otağı 75_")
+        await msg.reply("\n".join(lines), parse_mode="Markdown")
+        return
+
+    try:
+        pct = int(parts[-1])
+        room_name = " ".join(parts[1:-1])
+        await update_room_progress(smeta_number, room_name, pct, "", msg.from_user.id)
+        await msg.reply(
+            f"✅ *{room_name}* — {pct}% yeniləndi!",
+            parse_mode="Markdown"
+        )
+    except (ValueError, IndexError):
+        await msg.reply("❌ Format: /progress Otaq adı faiz\nMəs: /progress Qonaq otağı 75")
