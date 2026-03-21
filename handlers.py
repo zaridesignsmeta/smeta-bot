@@ -73,6 +73,22 @@ class UpdateForm(StatesGroup):
 #  Klaviaturalar
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def room_items_qty_kb(room: str, categories: dict) -> InlineKeyboardMarkup:
+    """Otaqdakı bütün işlər üçün miqdar daxiletmə klaviaturası"""
+    buttons = []
+    for cat, items in categories.items():
+        for item in items:
+            qty_text = f"✅ {item['qty']}" if item['qty'] > 0 else "➕ 0"
+            buttons.append([InlineKeyboardButton(
+                text=f"{qty_text}  |  {item['name']} ({item['unit']})",
+                callback_data=f"setqty_{item['name'][:30]}"
+            )])
+    buttons.append([
+        InlineKeyboardButton(text="✅ Bu otaq hazırdır", callback_data="room_qty_done"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def object_type_kb() -> InlineKeyboardMarkup:
     buttons = []
     for name in OBJECT_TYPES:
@@ -364,15 +380,107 @@ async def rooms_done(cq: CallbackQuery, state: FSMContext):
         await cq.answer("⚠️ Ən azı bir otaq seçin!", show_alert=True)
         return
 
-    # İlk otağa keç
-    first_room = list(data["rooms_data"].keys())[0]
+    # Bütün otaqlar üçün bütün işləri avtomatik əlavə et (miqdar=0, qiymət=standart)
+    rooms = data["rooms_data"]
+    multiplier = data.get("price_multiplier", 1.0)
+
+    for room in rooms:
+        rooms[room] = {}
+        for cat, items in WORK_CATEGORIES.items():
+            rooms[room][cat] = []
+            for item_name, base_price in items:
+                unit = "m²"
+                if "(" in item_name and ")" in item_name:
+                    unit = item_name[item_name.index("(")+1:item_name.index(")")]
+                    clean_name = item_name[:item_name.index("(")].strip()
+                else:
+                    clean_name = item_name
+                rooms[room][cat].append({
+                    "name": clean_name,
+                    "unit": unit,
+                    "qty": 0,
+                    "price": round(base_price * multiplier, 2),
+                })
+
+    await state.update_data(rooms_data=rooms)
+
+    # İlk otağa keç — miqdar daxiletmə
+    first_room = list(rooms.keys())[0]
     await state.update_data(current_room=first_room, current_room_idx=0)
     await state.set_state(SmetaForm.category_select)
+
     await cq.message.edit_text(
-        f"🏠 *{first_room}* — Kateqoriya seçin:",
+        f"✅ Bütün işlər avtomatik əlavə edildi!\n\n"
+        f"🏠 *{first_room}* — İndi hər iş üçün miqdar daxil edin.\n"
+        f"_(Etmək istəmədiklərinizi 0 buraxın)_",
         parse_mode="Markdown",
-        reply_markup=categories_kb(first_room)
+        reply_markup=room_items_qty_kb(first_room, rooms[first_room])
     )
+
+
+@router.callback_query(F.data.startswith("setqty_"), SmetaForm.category_select)
+async def set_qty_selected(cq: CallbackQuery, state: FSMContext):
+    item_name = cq.data[7:]
+    await state.update_data(_editing_item=item_name)
+    await state.set_state(SmetaForm.item_qty)
+    await cq.message.answer(
+        f"📏 *{item_name}*\nMiqdar daxil edin (0 = daxil deyil):",
+        parse_mode="Markdown"
+    )
+    await cq.answer()
+
+
+@router.message(SmetaForm.item_qty)
+async def item_qty_entered(msg: Message, state: FSMContext):
+    try:
+        qty = float(msg.text.replace(",", "."))
+        if qty < 0:
+            raise ValueError
+        data = await state.get_data()
+        rooms = data["rooms_data"]
+        room = data["current_room"]
+        item_name = data.get("_editing_item", "")
+
+        # Həmin işi tap və miqdarı yenilə
+        for cat, items in rooms[room].items():
+            for item in items:
+                if item["name"] == item_name or item_name.startswith(item["name"][:20]):
+                    item["qty"] = qty
+                    break
+
+        await state.update_data(rooms_data=rooms)
+        await state.set_state(SmetaForm.category_select)
+        await msg.answer(
+            f"✅ *{item_name}* — {qty} olaraq qeyd edildi.\n\n"
+            f"🏠 *{room}* — digər işləri daxil edin:",
+            parse_mode="Markdown",
+            reply_markup=room_items_qty_kb(room, rooms[room])
+        )
+    except ValueError:
+        await msg.answer("⚠️ Düzgün rəqəm daxil edin (məs: 25 və ya 12.5)")
+
+
+@router.callback_query(F.data == "room_qty_done", SmetaForm.category_select)
+async def room_qty_done(cq: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    rooms = data["rooms_data"]
+    room_keys = list(rooms.keys())
+    idx = data.get("current_room_idx", 0) + 1
+
+    if idx < len(room_keys):
+        next_room = room_keys[idx]
+        await state.update_data(current_room=next_room, current_room_idx=idx)
+        await cq.message.edit_text(
+            f"🏠 *{next_room}* — Miqdarları daxil edin:",
+            parse_mode="Markdown",
+            reply_markup=room_items_qty_kb(next_room, rooms[next_room])
+        )
+    else:
+        await state.set_state(SmetaForm.notes)
+        await cq.message.answer(
+            "📝 Qeydlər yazın (istəyə görə)\n"
+            "Yoxdursa /skip yazın:"
+        )
     await cq.answer()
 
 
