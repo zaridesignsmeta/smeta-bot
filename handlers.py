@@ -81,6 +81,9 @@ def price_category_kb() -> InlineKeyboardMarkup:
     for name, data in PRICE_CATEGORIES.items():
         buttons.append([InlineKeyboardButton(text=name, callback_data=f"price_{data['key']}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def main_menu_kb(user_id: int) -> ReplyKeyboardMarkup:
     buttons = [
         [KeyboardButton(text="📋 Yeni Smeta"), KeyboardButton(text="📁 Smetalarım")],
         [KeyboardButton(text="🏗️ Layihələr"),  KeyboardButton(text="📊 Statistika")],
