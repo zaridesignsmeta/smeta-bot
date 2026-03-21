@@ -502,3 +502,286 @@ def generate_pdf(smeta: dict) -> str:
 
     doc.build(story)
     return fname
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  AYLIK HESABAT EXCEL
+# ═══════════════════════════════════════════════════════════════════════════════
+
+MONTH_NAMES_AZ = {
+    "01": "Yanvar",  "02": "Fevral",  "03": "Mart",
+    "04": "Aprel",   "05": "May",     "06": "İyun",
+    "07": "İyul",    "08": "Avqust",  "09": "Sentyabr",
+    "10": "Oktyabr", "11": "Noyabr",  "12": "Dekabr",
+}
+
+
+def generate_monthly_excel(report: dict, smetas: list, month: str) -> str:
+    wb = Workbook()
+    ws = wb.active
+
+    year, mon = month.split("-")
+    month_name = MONTH_NAMES_AZ.get(mon, mon)
+    ws.title = f"{month_name} {year}"
+
+    # Sütun genişlikləri
+    for col, width in zip("ABCDEF", [6, 30, 16, 16, 16, 16]):
+        ws.column_dimensions[col].width = width
+
+    row = 1
+    # Başlıq
+    ws.merge_cells(f"A{row}:F{row}")
+    c = ws.cell(row, 1, f"{COMPANY_NAME} — {month_name} {year} Hesabatı")
+    c.font = _font(bold=True, size=14, color=WHITE)
+    c.fill = _fill(DARK_BLUE)
+    c.alignment = _align("center")
+    ws.row_dimensions[row].height = 28
+    row += 1
+
+    # Xülasə bölməsi
+    summary_data = [
+        ("Yeni smetalar",          report["new_smetas"],           None),
+        ("Tamamlanan",             report["completed"],            None),
+        ("Aktiv layihələr",        report["active"],               None),
+        ("Ümumi smeta dəyəri",     f"{report['total_value']:,.2f} AZN", None),
+        ("Alınan ödənişlər",       f"{report['received_payments']:,.2f} AZN", None),
+        ("Gözlənilən ödənişlər",   f"{report['expected_payments']:,.2f} AZN", None),
+        ("Material xərcləri",      f"{report['material_costs']:,.2f} AZN", None),
+        ("Mənfəət (təxmini)",      f"{report['profit']:,.2f} AZN", None),
+    ]
+
+    for label, value, _ in summary_data:
+        ws.merge_cells(f"A{row}:C{row}")
+        lc = ws.cell(row, 1, label)
+        lc.font = _font(size=10)
+        lc.fill = _fill(LIGHT_GRAY)
+        lc.alignment = _align("left")
+        lc.border = _border()
+
+        ws.merge_cells(f"D{row}:F{row}")
+        vc = ws.cell(row, 4, value)
+        vc.font = _font(bold=True, size=10)
+        vc.alignment = _align("right")
+        vc.border = _border()
+        row += 1
+
+    row += 1
+
+    # Smeta cədvəli
+    headers = ["№", "Smeta nömrəsi", "Müştəri", "Ümumi", "Ödənilib", "Status"]
+    for col_idx, h in enumerate(headers, 1):
+        c = ws.cell(row, col_idx, h)
+        c.font = _font(bold=True, size=9, color=WHITE)
+        c.fill = _fill(DARK_BLUE)
+        c.alignment = _align("center")
+        c.border = _border()
+    ws.row_dimensions[row].height = 20
+    row += 1
+
+    STATUS_MAP = {
+        "draft":    "Qaralama",
+        "sent":     "Göndərilib",
+        "approved": "Təsdiqlənib",
+        "rejected": "Rədd edilib",
+        "active":   "Aktiv",
+    }
+
+    for idx, s in enumerate(smetas, 1):
+        row_data = [
+            idx,
+            s["smeta_number"],
+            s["client_name"],
+            f"{s['total']:,.2f}",
+            f"{s.get('paid', 0):,.2f}",
+            STATUS_MAP.get(s["status"], s["status"]),
+        ]
+        fill = _fill(LIGHT_GRAY) if idx % 2 == 0 else _fill(WHITE)
+        for col_idx, val in enumerate(row_data, 1):
+            c = ws.cell(row, col_idx, val)
+            c.font = _font(size=9)
+            c.fill = fill
+            c.alignment = _align("center" if col_idx in (1, 6) else "left")
+            c.border = _border()
+        row += 1
+
+    fname = os.path.join(OUTPUT_DIR, f"hesabat_{month}.xlsx")
+    wb.save(fname)
+    return fname
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MÜQAVİLƏ PDF
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def generate_contract_pdf(smeta: dict) -> str:
+    fname = os.path.join(OUTPUT_DIR, f"muqavile_{smeta['smeta_number']}.pdf")
+    doc = SimpleDocTemplate(
+        fname, pagesize=A4,
+        leftMargin=2*cm, rightMargin=2*cm,
+        topMargin=2*cm, bottomMargin=2*cm,
+    )
+
+    dark = colors.HexColor(f"#{DARK_BLUE}")
+    gold = colors.HexColor(f"#{ACCENT}")
+
+    def ps(name, **kw):
+        return ParagraphStyle(name, **kw)
+
+    story = []
+
+    # Başlıq
+    story.append(Paragraph(
+        f"<b>MÜQAVİLƏ</b>",
+        ps("Title", fontName=FONT_BOLD, fontSize=18, textColor=dark,
+           alignment=TA_CENTER, spaceAfter=6)
+    ))
+    story.append(Paragraph(
+        f"№ {smeta['smeta_number']}",
+        ps("SubTitle", fontName=FONT, fontSize=11, textColor=gold,
+           alignment=TA_CENTER, spaceAfter=4)
+    ))
+    story.append(Paragraph(
+        f"Bakı şəhəri, {smeta['created_at'][:10]}",
+        ps("Date", fontName=FONT, fontSize=9, textColor=colors.grey,
+           alignment=TA_CENTER, spaceAfter=20)
+    ))
+
+    story.append(HRFlowable(width="100%", thickness=2, color=dark))
+    story.append(Spacer(1, 0.5*cm))
+
+    # Tərəflər
+    story.append(Paragraph(
+        "<b>TƏRƏFLƏRİN REKVİZİTLƏRİ</b>",
+        ps("H2", fontName=FONT_BOLD, fontSize=11, textColor=dark, spaceAfter=8)
+    ))
+
+    parties_data = [
+        ["İCRAÇI:",    COMPANY_NAME],
+        ["Ünvan:",      COMPANY_ADDRESS],
+        ["Telefon:",    COMPANY_PHONE],
+        ["",           ""],
+        ["SİFARİŞÇİ:", smeta["client_name"]],
+        ["Telefon:",    smeta["client_phone"]],
+        ["Ünvan:",      smeta["address"]],
+    ]
+    for label, value in parties_data:
+        if not label and not value:
+            story.append(Spacer(1, 0.2*cm))
+            continue
+        story.append(Paragraph(
+            f"<b>{label}</b> {value}",
+            ps("P", fontName=FONT, fontSize=10, spaceAfter=3)
+        ))
+
+    story.append(Spacer(1, 0.5*cm))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.lightgrey))
+    story.append(Spacer(1, 0.5*cm))
+
+    # Mövzu
+    story.append(Paragraph(
+        "<b>1. MÜQAVİLƏNİN MƏVZUSu</b>",
+        ps("H2", fontName=FONT_BOLD, fontSize=11, textColor=dark, spaceAfter=8)
+    ))
+    rooms_list = list(smeta["rooms_data"].keys()) if smeta.get("rooms_data") else []
+    rooms_txt = ", ".join(rooms_list) if rooms_list else "—"
+    story.append(Paragraph(
+        f"İcraçı Sifarişçinin aşağıdaki obyektdə təmir-bərpa işlərini yerinə yetirməyi öhdəsinə götürür:\n"
+        f"<b>Ünvan:</b> {smeta['address']}\n"
+        f"<b>Otaqlar:</b> {rooms_txt}",
+        ps("P", fontName=FONT, fontSize=10, spaceAfter=8, leading=16)
+    ))
+
+    # Dəyər
+    story.append(Paragraph(
+        "<b>2. MÜQAVİLƏNİN DƏYƏRİ VƏ ÖDƏNİŞ ŞƏRTI</b>",
+        ps("H2", fontName=FONT_BOLD, fontSize=11, textColor=dark, spaceAfter=8)
+    ))
+    story.append(Paragraph(
+        f"İşlərin ümumi dəyəri: <b>{smeta['total']:,.2f} AZN</b> (ƏDV daxil deyil)\n\n"
+        f"Ödəniş cədvəli:\n"
+        f"• Müqavilə imzalandıqdan sonra avans — 30%\n"
+        f"• İşlər 50% tamamlandıqda — 40%\n"
+        f"• İşlər tamamlandıqda son ödəniş — 30%",
+        ps("P", fontName=FONT, fontSize=10, spaceAfter=8, leading=16)
+    ))
+
+    # Müddət
+    story.append(Paragraph(
+        "<b>3. İŞLƏRİN MÜDDƏTİ</b>",
+        ps("H2", fontName=FONT_BOLD, fontSize=11, textColor=dark, spaceAfter=8)
+    ))
+    story.append(Paragraph(
+        "İşlər müqavilə imzalandıqdan sonra razılaşdırılmış müddətdə tamamlanacaq.\n"
+        "Başlama tarixi: _______________     Bitmə tarixi: _______________",
+        ps("P", fontName=FONT, fontSize=10, spaceAfter=8, leading=16)
+    ))
+
+    # Zəmanət
+    story.append(Paragraph(
+        "<b>4. ZƏMANƏT</b>",
+        ps("H2", fontName=FONT_BOLD, fontSize=11, textColor=dark, spaceAfter=8)
+    ))
+    story.append(Paragraph(
+        "İcraçı yerinə yetirilən işlərə <b>2 (iki) il</b> zəmanət verir.",
+        ps("P", fontName=FONT, fontSize=10, spaceAfter=8)
+    ))
+
+    # Ümumi müddəalar
+    story.append(Paragraph(
+        "<b>5. ÜMUMI MÜDDƏALAR</b>",
+        ps("H2", fontName=FONT_BOLD, fontSize=11, textColor=dark, spaceAfter=8)
+    ))
+    general = [
+        "Materiallar ayrıca hesablanır və müştəri tərəfindən razılaşdırılır.",
+        "İşlər müvafiq standartlara uyğun yerinə yetirilir.",
+        "Müqavilə iki nüsxədə imzalanır, hər bir tərəfdə bir nüsxə saxlanılır.",
+    ]
+    for item in general:
+        story.append(Paragraph(
+            f"• {item}",
+            ps("Li", fontName=FONT, fontSize=10, spaceAfter=4, leftIndent=12)
+        ))
+
+    story.append(Spacer(1, 1*cm))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.lightgrey))
+    story.append(Spacer(1, 0.5*cm))
+
+    # İmzalar
+    story.append(Paragraph(
+        "<b>TƏRƏFLƏRİN İMZALARI</b>",
+        ps("H2", fontName=FONT_BOLD, fontSize=11, textColor=dark, spaceAfter=12,
+           alignment=TA_CENTER)
+    ))
+
+    sign_tbl = Table(
+        [
+            ["İCRAÇI",                        "SİFARİŞÇİ"],
+            [COMPANY_NAME,                    smeta["client_name"]],
+            [f"Tel: {COMPANY_PHONE}",         f"Tel: {smeta['client_phone']}"],
+            ["", ""],
+            ["İmza: ___________________",    "İmza: ___________________"],
+            ["Tarix: ___________________",   "Tarix: ___________________"],
+        ],
+        colWidths=[9*cm, 9*cm]
+    )
+    sign_tbl.setStyle(TableStyle([
+        ("FONTNAME",   (0, 0), (-1, -1), FONT),
+        ("FONTNAME",   (0, 0), (-1, 0),  FONT_BOLD),
+        ("FONTSIZE",   (0, 0), (-1, -1), 10),
+        ("TEXTCOLOR",  (0, 0), (-1, 0),  dark),
+        ("ALIGN",      (0, 0), (0, -1),  "LEFT"),
+        ("ALIGN",      (1, 0), (1, -1),  "LEFT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(sign_tbl)
+
+    story.append(Spacer(1, 0.5*cm))
+    story.append(Paragraph(
+        f"{COMPANY_NAME} | {COMPANY_PHONE} | {COMPANY_ADDRESS}",
+        ps("Footer", fontName=FONT, fontSize=8, textColor=colors.grey,
+           alignment=TA_CENTER)
+    ))
+
+    doc.build(story)
+    return fname
