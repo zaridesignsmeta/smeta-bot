@@ -12,8 +12,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from config import BOT_TOKEN
-from database import init_db
+from config import BOT_TOKEN, ADMIN_IDS
+from database import init_db, get_pending_reminders, mark_reminder_sent
 from handlers import router
 from web import app
 
@@ -29,6 +29,30 @@ def run_web():
     app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 
+async def reminder_checker(bot: Bot):
+    """Hər 60 dəqiqədə xatırlatmaları yoxla"""
+    while True:
+        try:
+            reminders = await get_pending_reminders()
+            for rem in reminders:
+                for admin_id in ADMIN_IDS:
+                    try:
+                        await bot.send_message(
+                            admin_id,
+                            f"⏰ *Xatırlatma!*\n\n"
+                            f"📋 Smeta: *{rem['smeta_number']}*\n"
+                            f"📝 {rem['message']}",
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+                await mark_reminder_sent(rem["id"])
+                logger.info(f"✅ Xatırlatma göndərildi: {rem['id']} — {rem['smeta_number']}")
+        except Exception as e:
+            logger.error(f"Xatırlatma yoxlama xətası: {e}")
+        await asyncio.sleep(3600)  # 60 dəqiqə
+
+
 async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
@@ -40,6 +64,10 @@ async def main():
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
     logger.info("🌐 Veb server işə düşdü")
+
+    # Background reminder checker
+    asyncio.create_task(reminder_checker(bot))
+    logger.info("⏰ Xatırlatma checker işə düşdü")
 
     logger.info("🚀 Bot işə düşdü...")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

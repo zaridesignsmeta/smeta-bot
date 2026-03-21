@@ -127,6 +127,110 @@ async def init_db():
             )
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                smeta_number    TEXT,
+                amount          REAL,
+                payment_type    TEXT,
+                material_amount REAL DEFAULT 0,
+                labor_amount    REAL DEFAULT 0,
+                other_amount    REAL DEFAULT 0,
+                notes           TEXT,
+                created_by      INTEGER,
+                created_at      TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS workers (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER DEFAULT 0,
+                name        TEXT,
+                phone       TEXT,
+                role        TEXT,
+                daily_rate  REAL DEFAULT 0,
+                created_at  TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS worker_assignments (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                smeta_number TEXT,
+                worker_id    INTEGER REFERENCES workers(id),
+                start_date   TEXT,
+                end_date     TEXT,
+                notes        TEXT,
+                created_at   TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS worker_payments (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                smeta_number TEXT,
+                worker_id    INTEGER REFERENCES workers(id),
+                amount       REAL,
+                date         TEXT,
+                notes        TEXT,
+                created_by   INTEGER,
+                created_at   TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                smeta_number TEXT,
+                message      TEXT,
+                remind_at    TEXT,
+                is_sent      INTEGER DEFAULT 0,
+                created_by   INTEGER,
+                created_at   TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS shopping_list (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                smeta_number TEXT,
+                item_name    TEXT,
+                unit         TEXT,
+                qty          REAL DEFAULT 0,
+                priority     TEXT DEFAULT 'normal',
+                status       TEXT DEFAULT 'pending',
+                price_paid   REAL DEFAULT 0,
+                notes        TEXT,
+                created_at   TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS material_photos (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                material_id  INTEGER DEFAULT 0,
+                smeta_number TEXT,
+                file_id      TEXT,
+                caption      TEXT,
+                uploaded_by  INTEGER,
+                created_at   TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        # Add new columns to smetas if they don't exist yet
+        for col_def in [
+            "ALTER TABLE smetas ADD COLUMN object_type TEXT",
+            "ALTER TABLE smetas ADD COLUMN price_category TEXT",
+            "ALTER TABLE smetas ADD COLUMN area_m2 REAL",
+            "ALTER TABLE smetas ADD COLUMN start_date TEXT",
+            "ALTER TABLE smetas ADD COLUMN expected_end_date TEXT",
+        ]:
+            try:
+                await db.execute(col_def)
+            except Exception:
+                pass  # column already exists
+
         await db.commit()
 
 # ── Smeta funksiyaları ────────────────────────────────────────────────────────
@@ -426,3 +530,298 @@ async def init_checklist_for_smeta(smeta_number: str, rooms: list):
                     VALUES (?, ?, ?)
                 """, (smeta_number, room, item))
         await db.commit()
+
+
+# ── Ödəniş funksiyaları ───────────────────────────────────────────────────────
+
+async def add_payment(smeta_number: str, amount: float, payment_type: str,
+                      material_amount: float = 0, labor_amount: float = 0,
+                      other_amount: float = 0, notes: str = "", created_by: int = 0) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO payments (smeta_number, amount, payment_type, material_amount,
+                                  labor_amount, other_amount, notes, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (smeta_number, amount, payment_type, material_amount,
+              labor_amount, other_amount, notes, created_by))
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_payments(smeta_number: str) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM payments WHERE smeta_number=? ORDER BY created_at",
+            (smeta_number,)
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_total_paid(smeta_number: str) -> float:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE smeta_number=?",
+            (smeta_number,)
+        ) as cur:
+            return (await cur.fetchone())[0]
+
+
+# ── İşçi funksiyaları ─────────────────────────────────────────────────────────
+
+async def add_worker(telegram_id: int, name: str, phone: str, role: str, daily_rate: float) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO workers (telegram_id, name, phone, role, daily_rate)
+            VALUES (?, ?, ?, ?, ?)
+        """, (telegram_id, name, phone, role, daily_rate))
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_workers() -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM workers ORDER BY name") as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_worker(worker_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM workers WHERE id=?", (worker_id,)) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def assign_worker(smeta_number: str, worker_id: int, start_date: str,
+                        end_date: str = "", notes: str = "") -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO worker_assignments (smeta_number, worker_id, start_date, end_date, notes)
+            VALUES (?, ?, ?, ?, ?)
+        """, (smeta_number, worker_id, start_date, end_date, notes))
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_worker_assignments(smeta_number: str = None, worker_id: int = None) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if smeta_number:
+            async with db.execute("""
+                SELECT wa.*, w.name, w.role, w.phone, w.daily_rate
+                FROM worker_assignments wa
+                JOIN workers w ON w.id = wa.worker_id
+                WHERE wa.smeta_number=?
+            """, (smeta_number,)) as cur:
+                return [dict(r) for r in await cur.fetchall()]
+        elif worker_id:
+            async with db.execute(
+                "SELECT * FROM worker_assignments WHERE worker_id=? ORDER BY start_date DESC",
+                (worker_id,)
+            ) as cur:
+                return [dict(r) for r in await cur.fetchall()]
+        return []
+
+
+async def add_worker_payment(smeta_number: str, worker_id: int, amount: float,
+                             date: str, notes: str = "", created_by: int = 0) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO worker_payments (smeta_number, worker_id, amount, date, notes, created_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (smeta_number, worker_id, amount, date, notes, created_by))
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_worker_payments_by_month(worker_id: int, month: str) -> list:
+    """month = '2026-03' format"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT wp.*, w.name as worker_name, w.role
+            FROM worker_payments wp
+            JOIN workers w ON w.id = wp.worker_id
+            WHERE wp.worker_id=? AND strftime('%Y-%m', wp.created_at)=?
+            ORDER BY wp.created_at DESC
+        """, (worker_id, month)) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+# ── Xatırlatma funksiyaları ───────────────────────────────────────────────────
+
+async def add_reminder(smeta_number: str, message: str, remind_at: str, created_by: int = 0) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO reminders (smeta_number, message, remind_at, created_by)
+            VALUES (?, ?, ?, ?)
+        """, (smeta_number, message, remind_at, created_by))
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_pending_reminders() -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT * FROM reminders
+            WHERE is_sent=0 AND remind_at <= datetime('now')
+            ORDER BY remind_at
+        """) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def mark_reminder_sent(reminder_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE reminders SET is_sent=1 WHERE id=?", (reminder_id,))
+        await db.commit()
+
+
+# ── Alış siyahısı funksiyaları ────────────────────────────────────────────────
+
+async def add_shopping_item(smeta_number: str, item_name: str, unit: str,
+                            qty: float, priority: str = "normal", notes: str = "") -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO shopping_list (smeta_number, item_name, unit, qty, priority, status, notes)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        """, (smeta_number, item_name, unit, qty, priority, notes))
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_shopping_list(smeta_number: str) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM shopping_list WHERE smeta_number=? ORDER BY priority, created_at",
+            (smeta_number,)
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def update_shopping_item(item_id: int, status: str, price_paid: float = 0, notes: str = ""):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE shopping_list SET status=?, price_paid=?, notes=?
+            WHERE id=?
+        """, (status, price_paid, notes, item_id))
+        await db.commit()
+
+
+# ── Material foto ─────────────────────────────────────────────────────────────
+
+async def save_material_photo(material_id: int, smeta_number: str, file_id: str,
+                              caption: str = "", uploaded_by: int = 0):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO material_photos (material_id, smeta_number, file_id, caption, uploaded_by)
+            VALUES (?, ?, ?, ?, ?)
+        """, (material_id, smeta_number, file_id, caption, uploaded_by))
+        await db.commit()
+
+
+async def get_material_photos(smeta_number: str) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM material_photos WHERE smeta_number=? ORDER BY created_at DESC",
+            (smeta_number,)
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+# ── Aylıq hesabat ─────────────────────────────────────────────────────────────
+
+async def get_monthly_report(month: str) -> dict:
+    """month = '2026-03' formatında"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        async with db.execute("""
+            SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total_value
+            FROM smetas WHERE strftime('%Y-%m', created_at)=?
+        """, (month,)) as cur:
+            row = dict(await cur.fetchone())
+            new_smetas = row["count"]
+            total_value = row["total_value"]
+
+        async with db.execute("""
+            SELECT COUNT(*) as count FROM smetas
+            WHERE status='approved' AND strftime('%Y-%m', updated_at)=?
+        """, (month,)) as cur:
+            completed = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) as count FROM smetas WHERE status='active'"
+        ) as cur:
+            active = (await cur.fetchone())[0]
+
+        async with db.execute("""
+            SELECT COALESCE(SUM(amount), 0) as total
+            FROM payments WHERE strftime('%Y-%m', created_at)=?
+        """, (month,)) as cur:
+            received_payments = (await cur.fetchone())[0]
+
+        async with db.execute("""
+            SELECT COALESCE(SUM(price_paid), 0) as total
+            FROM shopping_list WHERE status='bought' AND strftime('%Y-%m', created_at)=?
+        """, (month,)) as cur:
+            material_costs = (await cur.fetchone())[0]
+
+        async with db.execute("""
+            SELECT COALESCE(SUM(amount), 0) as total
+            FROM worker_payments WHERE strftime('%Y-%m', created_at)=?
+        """, (month,)) as cur:
+            worker_costs = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COALESCE(SUM(total), 0) FROM smetas WHERE status='approved'"
+        ) as cur:
+            total_approved = (await cur.fetchone())[0]
+
+        async with db.execute("SELECT COALESCE(SUM(amount), 0) FROM payments") as cur:
+            total_received_all = (await cur.fetchone())[0]
+
+        expected_payments = max(0, total_approved - total_received_all)
+        profit = received_payments - material_costs - worker_costs
+
+        return {
+            "month": month,
+            "new_smetas": new_smetas,
+            "completed": completed,
+            "active": active,
+            "total_value": total_value,
+            "received_payments": received_payments,
+            "expected_payments": expected_payments,
+            "material_costs": material_costs,
+            "worker_costs": worker_costs,
+            "profit": profit,
+        }
+
+
+async def get_all_smetas_for_report(month: str) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT s.smeta_number, s.client_name, s.total, s.status, s.created_at,
+                   COALESCE((SELECT SUM(p.amount) FROM payments p
+                             WHERE p.smeta_number=s.smeta_number), 0) as paid
+            FROM smetas s
+            WHERE strftime('%Y-%m', s.created_at)=?
+            ORDER BY s.created_at
+        """, (month,)) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_all_smetas_admin() -> list:
+    """Admin üçün bütün smetalar"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, smeta_number, client_name, total, status, created_at, telegram_id "
+            "FROM smetas ORDER BY created_at DESC LIMIT 50"
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]

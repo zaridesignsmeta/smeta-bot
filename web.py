@@ -4,8 +4,15 @@ import asyncio
 import json
 import os
 import requests as req_lib
+from datetime import datetime
 
 app = Flask(__name__)
+
+PAYMENT_TYPE_LABELS = {
+    "advance": "💰 Avans",
+    "interim": "💵 Ara ödəniş",
+    "final":   "✅ Son ödəniş",
+}
 
 TEMPLATE = """<!DOCTYPE html>
 <html lang="az">
@@ -121,6 +128,21 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#F0F2F5; color:#1a1a2
 .footer { text-align:center; margin-top:40px; color:#aaa; font-size:11px; }
 .footer strong { color:#C9973A; }
 
+/* Payment tab */
+.pay-summary { background:#fff; border-radius:10px; padding:18px 22px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+.pay-bar-wrap { background:#F0F2F5; border-radius:8px; height:10px; margin:10px 0 6px; }
+.pay-bar-fill { height:100%; border-radius:8px; background:linear-gradient(90deg,#1B2A4A,#C9973A); }
+.pay-list { background:#fff; border-radius:10px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+.pay-item { display:flex; align-items:flex-start; padding:14px 16px; border-bottom:1px solid #F0F2F5; gap:12px; }
+.pay-item:last-child { border-bottom:none; }
+.pay-icon { width:36px; height:36px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:17px; flex-shrink:0; background:#EEF2FF; }
+.pay-info { flex:1; }
+.pay-amount { font-size:16px; font-weight:700; color:#1B2A4A; }
+.pay-type { font-size:11px; color:#888; margin-top:2px; }
+.pay-cats { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
+.pay-cat { font-size:10px; padding:2px 8px; border-radius:10px; background:#F0F2F5; color:#555; }
+.pay-date { font-size:11px; color:#aaa; white-space:nowrap; }
+
 .lightbox { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.92); z-index:1000; align-items:center; justify-content:center; }
 .lightbox.open { display:flex; }
 .lightbox img { max-width:92%; max-height:88%; border-radius:8px; }
@@ -165,8 +187,9 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#F0F2F5; color:#1a1a2
   <div class="tabs">
     <button class="tab active" onclick="showTab('smeta',this)">📋 Smeta</button>
     <button class="tab" onclick="showTab('gedishat',this)">🏗️ Gedişat</button>
-    <button class="tab" onclick="showTab('material',this)">📦 Materiallar</button>
+    <button class="tab" onclick="showTab('material',this)">📦 Material</button>
     <button class="tab" onclick="showTab('checklist',this)">✅ Yoxlama</button>
+    <button class="tab" onclick="showTab('payments',this)">💳 Ödənişlər</button>
   </div>
 
   <!-- TAB 1: SMETA -->
@@ -283,11 +306,57 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#F0F2F5; color:#1a1a2
 
   <!-- TAB 3: MATERIALLAR -->
   <div id="tab-material" class="tab-content">
+    {% if shopping_list %}
+    {% set bought_s = shopping_list|selectattr('status','eq','bought')|list %}
+    {% set pending_s = shopping_list|selectattr('status','eq','pending')|list %}
+    {% set delivered_s = shopping_list|selectattr('status','eq','delivered')|list %}
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">
+      <div style="background:#D4EDDA;border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:#155724">{{ bought_s|length }}</div>
+        <div style="font-size:11px;color:#155724">Alınıb ✅</div>
+      </div>
+      <div style="background:#FFF3CD;border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:#856404">{{ pending_s|length }}</div>
+        <div style="font-size:11px;color:#856404">Gözləyir ⏳</div>
+      </div>
+      <div style="background:#CCE5FF;border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:#004085">{{ delivered_s|length }}</div>
+        <div style="font-size:11px;color:#004085">Çatdırıldı 🚚</div>
+      </div>
+    </div>
+
+    {% set urgent_items = shopping_list|selectattr('priority','eq','urgent')|list %}
+    {% set normal_items = shopping_list|selectattr('priority','eq','normal')|list %}
+    {% set late_items   = shopping_list|selectattr('priority','eq','late')|list %}
+
+    {% for group_label, group_items in [('🔴 TƏCİLİ — 1-ci həftə', urgent_items), ('🟡 Normal — 2-ci həftə', normal_items), ('🟢 Son mərhələ', late_items)] %}
+    {% if group_items %}
+    <div style="font-size:12px;font-weight:700;color:#1B2A4A;padding:10px 16px;background:#fff;border-radius:8px 8px 0 0;border-bottom:1px solid #F0F2F5;margin-top:12px">{{ group_label }}</div>
+    <div class="mat-list" style="border-radius:0 0 8px 8px;margin-top:0">
+      {% for mat in group_items %}
+      <div class="mat-item">
+        <div class="mat-icon {{ 'mat-bought' if mat.status == 'bought' else ('mat-missing' if mat.status == 'delivered' else 'mat-pending') }}">
+          {{ '✅' if mat.status == 'bought' else ('🚚' if mat.status == 'delivered' else '⏳') }}
+        </div>
+        <div class="mat-info">
+          <div class="mat-name">{{ mat.item_name }}</div>
+          <div class="mat-detail">{{ mat.qty }} {{ mat.unit }}{% if mat.notes %} · {{ mat.notes }}{% endif %}</div>
+        </div>
+        <span class="mat-status {{ 'st-bought' if mat.status == 'bought' else ('st-missing' if mat.status == 'delivered' else 'st-pending') }}">
+          {{ 'Alındı' if mat.status == 'bought' else ('Çatdırıldı' if mat.status == 'delivered' else 'Gözləyir') }}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% endfor %}
+
+    {% else %}
     {% if materials %}
     {% set bought = materials|selectattr('status','eq','bought')|list %}
     {% set pending = materials|selectattr('status','eq','pending')|list %}
     {% set delivered = materials|selectattr('status','eq','delivered')|list %}
-
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">
       <div style="background:#D4EDDA;border-radius:10px;padding:14px;text-align:center">
         <div style="font-size:22px;font-weight:700;color:#155724">{{ bought|length }}</div>
@@ -302,7 +371,6 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#F0F2F5; color:#1a1a2
         <div style="font-size:11px;color:#721C24">Çatdırılıb</div>
       </div>
     </div>
-
     <div class="mat-list">
       {% for mat in materials %}
       <div class="mat-item">
@@ -311,7 +379,7 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#F0F2F5; color:#1a1a2
         </div>
         <div class="mat-info">
           <div class="mat-name">{{ mat.name }}</div>
-          <div class="mat-detail">{{ mat.qty_needed }} {{ mat.unit }} · {{ "%.2f"|format(mat.price) }} AZN{% if mat.notes %} · {{ mat.notes }}{% endif %}</div>
+          <div class="mat-detail">{{ mat.qty_needed }} {{ mat.unit }}{% if mat.notes %} · {{ mat.notes }}{% endif %}</div>
         </div>
         <span class="mat-status {{ 'st-bought' if mat.status == 'bought' else ('st-pending' if mat.status == 'pending' else 'st-missing') }}">
           {{ 'Alındı' if mat.status == 'bought' else ('Gözləyir' if mat.status == 'pending' else 'Çatdırıldı') }}
@@ -325,6 +393,7 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#F0F2F5; color:#1a1a2
       <p>Hələ material əlavə edilməyib</p>
       <p style="margin-top:6px;font-size:11px">Bot vasitəsilə material əlavə edin</p>
     </div>
+    {% endif %}
     {% endif %}
   </div>
 
@@ -374,6 +443,65 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#F0F2F5; color:#1a1a2
     <div class="mat-empty">
       <div style="font-size:40px;margin-bottom:12px">✅</div>
       <p>Hələ check-list əlavə edilməyib</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- TAB 5: ÖDƏNİŞLƏR -->
+  <div id="tab-payments" class="tab-content">
+    {% if payments %}
+    {% set total_paid_amt = namespace(val=0) %}
+    {% for p in payments %}{% set total_paid_amt.val = total_paid_amt.val + p.amount %}{% endfor %}
+    {% set pct = (total_paid_amt.val / smeta.total * 100) if smeta.total > 0 else 0 %}
+
+    <div class="pay-summary">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:13px;color:#666">Ödənilən məbləğ</span>
+        <span style="font-size:18px;font-weight:700;color:#1B2A4A">{{ "%.2f"|format(total_paid_amt.val) }} AZN</span>
+      </div>
+      <div class="pay-bar-wrap">
+        <div class="pay-bar-fill" style="width:{{ [pct,100]|min }}%"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:#888">
+        <span>Ödənilib: {{ "%.2f"|format(total_paid_amt.val) }} AZN</span>
+        <span>Ümumi: {{ "%.2f"|format(smeta.total) }} AZN ({{ "%.0f"|format(pct) }}%)</span>
+      </div>
+      {% set remaining = smeta.total - total_paid_amt.val %}
+      {% if remaining > 0 %}
+      <div style="margin-top:10px;padding:10px 14px;background:#FFF3CD;border-radius:8px;font-size:12px;color:#856404">
+        ⏳ Qalıq: <strong>{{ "%.2f"|format(remaining) }} AZN</strong>
+      </div>
+      {% else %}
+      <div style="margin-top:10px;padding:10px 14px;background:#D4EDDA;border-radius:8px;font-size:12px;color:#155724">
+        ✅ Tam ödənilib
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="pay-list">
+      {% for p in payments %}
+      {% set ptype_map = {'advance':'💰 Avans','interim':'💵 Ara ödəniş','final':'✅ Son ödəniş'} %}
+      <div class="pay-item">
+        <div class="pay-icon">💳</div>
+        <div class="pay-info">
+          <div class="pay-amount">{{ "%.2f"|format(p.amount) }} AZN</div>
+          <div class="pay-type">{{ ptype_map.get(p.payment_type, p.payment_type) }}</div>
+          <div class="pay-cats">
+            {% if p.material_amount > 0 %}<span class="pay-cat">📦 Material</span>{% endif %}
+            {% if p.labor_amount > 0 %}<span class="pay-cat">👷 İşçilik</span>{% endif %}
+            {% if p.other_amount > 0 %}<span class="pay-cat">📋 Digər</span>{% endif %}
+          </div>
+          {% if p.notes %}<div style="font-size:11px;color:#888;margin-top:4px">{{ p.notes }}</div>{% endif %}
+        </div>
+        <div class="pay-date">{{ p.created_at[:10] }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% else %}
+    <div class="mat-empty">
+      <div style="font-size:40px;margin-bottom:12px">💳</div>
+      <p>Hələ ödəniş qeyd edilməyib</p>
     </div>
     {% endif %}
   </div>
@@ -475,6 +603,28 @@ async def get_data_async(smeta_number):
             pass
         result["checklist_by_room"] = checklist_by_room
 
+        payments = []
+        try:
+            async with db.execute(
+                "SELECT * FROM payments WHERE smeta_number=? ORDER BY created_at DESC",
+                (smeta_number,)
+            ) as cur:
+                payments = [dict(r) for r in await cur.fetchall()]
+        except Exception:
+            pass
+        result["payments"] = payments
+
+        shopping_list = []
+        try:
+            async with db.execute(
+                "SELECT * FROM shopping_list WHERE smeta_number=? ORDER BY priority, created_at",
+                (smeta_number,)
+            ) as cur:
+                shopping_list = [dict(r) for r in await cur.fetchall()]
+        except Exception:
+            pass
+        result["shopping_list"] = shopping_list
+
     return result
 
 
@@ -491,6 +641,8 @@ def view_smeta(smeta_number):
         photos_by_room=data["photos_by_room"],
         materials=data["materials"],
         checklist_by_room=data["checklist_by_room"],
+        payments=data["payments"],
+        shopping_list=data["shopping_list"],
     )
 
 

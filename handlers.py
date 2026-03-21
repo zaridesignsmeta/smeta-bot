@@ -28,11 +28,24 @@ from database import (
     save_project, get_active_projects, update_project_progress,
     update_room_progress, get_room_progress, save_photo, get_photos,
     get_smeta_by_number, get_user_smeta_numbers,
-    link_group_to_smeta, get_smeta_by_group, get_group_by_smeta
+    link_group_to_smeta, get_smeta_by_group, get_group_by_smeta,
+    get_total_paid, init_checklist_for_smeta,
 )
 from generators import generate_excel, generate_pdf
 
+# New feature routers
+from handlers_payment  import router as payment_router
+from handlers_worker   import router as worker_router
+from handlers_project  import router as project_router
+from handlers_reminder import router as reminder_router
+from handlers_report   import router as report_router
+
 router = Router()
+router.include_router(payment_router)
+router.include_router(worker_router)
+router.include_router(project_router)
+router.include_router(reminder_router)
+router.include_router(report_router)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -109,7 +122,7 @@ def main_menu_kb(user_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="🏗️ Layihələr"),  KeyboardButton(text="📊 Statistika")],
     ]
     if user_id in ADMIN_IDS:
-        buttons.append([KeyboardButton(text="⚙️ Admin Panel")])
+        buttons.append([KeyboardButton(text="👷 İşçilər"), KeyboardButton(text="⚙️ Admin Panel")])
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
@@ -834,12 +847,29 @@ async def download_pdf(cq: CallbackQuery, bot: Bot):
 
 
 @router.callback_query(F.data.startswith("status_"))
-async def change_status(cq: CallbackQuery):
-    parts   = cq.data.split("_")
-    status  = parts[1]
+async def change_status(cq: CallbackQuery, bot: Bot):
+    parts    = cq.data.split("_")
+    status   = parts[1]
     smeta_id = int(parts[2])
     await update_smeta_status(smeta_id, status)
     await cq.answer(f"✅ Status yeniləndi: {status}", show_alert=True)
+
+    if status == "approved":
+        smeta = await get_smeta(smeta_id)
+        if smeta:
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"✅ *{smeta['smeta_number']} təsdiqləndi!*\n\n"
+                        f"👤 Müştəri: {smeta['client_name']}\n"
+                        f"💰 Məbləğ: *{smeta['total']:,.2f} {CURRENCY}*\n\n"
+                        f"▶️ Layihəni başlatmaq üçün:\n"
+                        f"/start_project {smeta['smeta_number']}",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
 
 
 # ── Layihələr ────────────────────────────────────────────────────────────────
@@ -935,17 +965,34 @@ async def statistics(msg: Message):
     )
 
 
+@router.message(F.text == "👷 İşçilər")
+async def workers_menu_btn(msg: Message):
+    from handlers_worker import cmd_workers
+    await cmd_workers(msg)
+
+
 @router.message(F.text == "⚙️ Admin Panel")
 async def admin_panel(msg: Message):
     if msg.from_user.id not in ADMIN_IDS:
         await msg.answer("⛔ İcazə yoxdur.")
         return
-    all_smetas = await get_user_smetas(0, limit=50)
     await msg.answer(
-        f"⚙️ *Admin Panel*\n\n"
-        f"Komandalar:\n"
-        f"/newproject — Yeni layihə\n"
-        f"/allsmetas — Bütün smetalar\n",
+        "⚙️ *Admin Panel*\n\n"
+        "💳 Ödənişlər:\n"
+        "  /payment — Ödəniş əlavə et\n\n"
+        "👷 İşçilər:\n"
+        "  /addworker — Yeni işçi\n"
+        "  /workers — İşçilər siyahısı\n"
+        "  /assign — İşçi təyin et\n"
+        "  /workerpay — İşçiyə ödəniş\n\n"
+        "🏗️ Layihə:\n"
+        "  /start_project SM-XXXX — Başlat\n"
+        "  /shopping — Alış siyahısı\n\n"
+        "⏰ Digər:\n"
+        "  /remind — Xatırlatma\n"
+        "  /report — Aylıq hesabat\n"
+        "  /contract SM-XXXX — Müqavilə\n"
+        "  /update — Gedişat yenilə\n",
         parse_mode="Markdown"
     )
 
