@@ -125,15 +125,8 @@ def items_kb(items: list) -> InlineKeyboardMarkup:
 
 def confirm_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📊 Excel yüklə", callback_data="export_excel"),
-            InlineKeyboardButton(text="📄 PDF yüklə",   callback_data="export_pdf"),
-        ],
-        [
-            InlineKeyboardButton(text="✅ Hər ikisi",   callback_data="export_both"),
-            InlineKeyboardButton(text="✏️ Düzəliş et",  callback_data="edit_smeta"),
-        ],
-        [InlineKeyboardButton(text="❌ Ləğv et",        callback_data="cancel_smeta")],
+        [InlineKeyboardButton(text="✅ Smeta yarat və link al", callback_data="export_both")],
+        [InlineKeyboardButton(text="❌ Ləğv et", callback_data="cancel_smeta")],
     ])
 
 
@@ -529,29 +522,17 @@ async def export_smeta(cq: CallbackQuery, state: FSMContext, bot: Bot):
     smeta_id = await save_smeta(data)
     data["smeta_number"] = smeta_number
 
-    await cq.message.answer("⏳ Fayllar hazırlanır...")
+    await cq.message.answer("⏳ Smeta hazırlanır...")
 
-    action = cq.data
     try:
-        if action in ("export_excel", "export_both"):
-            xlsx_path = generate_excel(data)
-            await bot.send_document(
-                cq.from_user.id,
-                FSInputFile(xlsx_path, filename=f"Smeta_{smeta_number}.xlsx"),
-                caption=f"📊 Smeta № {smeta_number}\nMüştəri: {data['client_name']}"
-            )
-
-        if action in ("export_pdf", "export_both"):
-            pdf_path = generate_pdf(data)
-            await bot.send_document(
-                cq.from_user.id,
-                FSInputFile(pdf_path, filename=f"Smeta_{smeta_number}.pdf"),
-                caption=f"📄 Smeta № {smeta_number}\nMüştəri: {data['client_name']}"
-            )
+        WEB_URL = os.getenv("WEB_URL", "https://smeta-bot-production.up.railway.app")
+        link = f"{WEB_URL}/smeta/{smeta_number}"
 
         await cq.message.answer(
-            f"✅ *Smeta № {smeta_number} hazırdır!*\n"
-            f"Ümumi məbləğ: {data['total']:,.2f} {CURRENCY}",
+            f"✅ *Smeta № {smeta_number} hazırdır!*\n\n"
+            f"👤 Müştəri: {data['client_name']}\n"
+            f"💰 Məbləğ: *{data['total']:,.2f} {CURRENCY}*\n\n"
+            f"🔗 *Müştəriyə göndərin:*\n{link}",
             parse_mode="Markdown",
             reply_markup=main_menu_kb(cq.from_user.id)
         )
