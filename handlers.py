@@ -31,18 +31,23 @@ from database import (
     link_group_to_smeta, get_smeta_by_group, get_group_by_smeta,
     get_total_paid, init_checklist_for_smeta,
     add_material, get_materials, update_material_status,
+    upsert_checklist_item, toggle_checklist_item, get_checklist,
+    update_smeta_overall_progress,
 )
 from generators import generate_excel, generate_pdf
 
 # New feature routers
-from handlers_payment  import router as payment_router
-from handlers_worker   import router as worker_router
-from handlers_project  import router as project_router
-from handlers_reminder import router as reminder_router
-from handlers_material import router as material_router
-from handlers_report   import router as report_router
+from handlers_payment      import router as payment_router
+from handlers_worker       import router as worker_router
+from handlers_project      import router as project_router
+from handlers_reminder     import router as reminder_router
+from handlers_material     import router as material_router
+from handlers_report       import router as report_router
+from handlers_smart_smeta  import router as smart_smeta_router
 
 router = Router()
+# Smart smeta router FIRST — overrides old "📋 Yeni Smeta" handler
+router.include_router(smart_smeta_router)
 router.include_router(payment_router)
 router.include_router(worker_router)
 router.include_router(project_router)
@@ -224,12 +229,12 @@ async def cmd_start(msg: Message, state: FSMContext):
     )
 
 
-@router.message(Command("newsmeta"))
+@router.message(Command("newsmeta_old"))
 async def cmd_newsmeta(msg: Message, state: FSMContext):
     await new_smeta_start(msg, state)
 
 
-@router.message(F.text == "📋 Yeni Smeta")
+@router.message(F.text == "📋 Yeni Smeta (köhnə)")
 async def new_smeta_start(msg: Message, state: FSMContext):
     await state.clear()
     await state.update_data(
@@ -826,7 +831,7 @@ async def view_smeta(cq: CallbackQuery):
         f"📍 {smeta['address']}\n"
         f"💰 *{smeta['total']:,.2f} {CURRENCY}*\n"
         f"📊 Status: {status_map.get(smeta['status'], smeta['status'])}\n"
-        f"📅 {smeta['created_at'][:10]}",
+        f"📅 {str(smeta['created_at'])[:10]}",
         parse_mode="Markdown",
         reply_markup=smeta_action_kb(smeta_id)
     )
@@ -1294,12 +1299,16 @@ async def linksmeta_pick(cq: CallbackQuery, state: FSMContext):
 # ── Qrup foto FSM ────────────────────────────────────────────────────────────
 
 class GroupPhotoForm(StatesGroup):
-    photo_type     = State()   # material mi, gedişat mi?
-    gp_room        = State()   # otaq seç
-    gp_pct         = State()   # gedişat faizi
-    gp_mat_what    = State()   # material seç / yaz
-    gp_mat_qty     = State()   # miqdar
-    gp_mat_receipt = State()   # qaimə var?
+    photo_type          = State()   # material mi, gedişat mi?
+    # Material qolu
+    gp_mat_what         = State()   # material seç / yaz
+    gp_mat_qty          = State()   # miqdar
+    gp_mat_receipt      = State()   # qaimə var?
+    # İş gedişatı qolu — yeni genişlənmiş
+    gp_overall_pct      = State()   # ümumi faiz (bütün mənzil)
+    gp_bathroom_pct     = State()   # hər hamam üçün faiz (sırayla)
+    gp_elektrik         = State()   # elektrik checklist (otaq-otaq)
+    gp_santexnika       = State()   # santexnika checklist (nəm sahələr)
 
 
 def _gp_type_kb() -> InlineKeyboardMarkup:
@@ -1307,14 +1316,6 @@ def _gp_type_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📦 Material gəldi",  callback_data="gp_type_material")],
         [InlineKeyboardButton(text="🏗️ İş gedişatı",    callback_data="gp_type_progress")],
     ])
-
-
-def _gp_room_kb(rooms: list) -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text=f"🏠 {r}", callback_data=f"gproom_{r}")]
-        for r in rooms
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def _gp_mat_kb(materials: list) -> InlineKeyboardMarkup:
@@ -1335,6 +1336,41 @@ def _gp_receipt_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✅ Var — göndərirəm", callback_data="gp_receipt_yes")],
         [InlineKeyboardButton(text="❌ Yoxdur",           callback_data="gp_receipt_no")],
     ])
+
+
+def _gp_checklist_kb(items: list, prefix: str) -> InlineKeyboardMarkup:
+    """items: list of {"id": int, "room_name": str, "item": str, "is_checked": int}"""
+    buttons = []
+    for item in items:
+        check = "✅" if item["is_checked"] else "☐"
+        label = f"{check} {item['room_name']} — {item['item'].split(':',1)[-1].strip()}"
+        buttons.append([InlineKeyboardButton(
+            text=label[:64], callback_data=f"{prefix}_toggle_{item['id']}"
+        )])
+    buttons.append([InlineKeyboardButton(text="▶️ Növbəti", callback_data=f"{prefix}_done")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _get_rooms_from_smeta(smeta: dict) -> list:
+    return list(smeta["rooms_data"].keys()) if smeta else []
+
+
+def _get_bathrooms_from_smeta(smeta: dict) -> list:
+    rooms = _get_rooms_from_smeta(smeta)
+    return [r for r in rooms if "hamam" in r.lower() or "Hamam" in r]
+
+
+def _get_wet_rooms_from_smeta(smeta: dict) -> list:
+    """Santexnika üçün nəm sahələr: hamamlar + mətbəx + xüsusi otaqlar"""
+    rooms = _get_rooms_from_smeta(smeta)
+    wet = [r for r in rooms if any(k in r.lower() for k in ("hamam", "tualet", "mətbəx", "metbex"))]
+    # Xüsusi otaqlar
+    special = smeta.get("special_rooms", [])
+    if isinstance(special, list):
+        for sp in special:
+            if sp in rooms and sp not in wet:
+                wet.append(sp)
+    return wet
 
 
 @router.message(F.photo & F.chat.type.in_({"group", "supergroup"}))
@@ -1379,9 +1415,20 @@ async def group_photo_received(msg: Message, state: FSMContext):
 async def gp_type_progress(cq: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     smeta = await get_smeta_by_number(data["smeta_number"])
-    rooms = list(smeta["rooms_data"].keys()) if smeta else []
-    await state.set_state(GroupPhotoForm.gp_room)
-    await cq.message.edit_text("🏠 Hansı otaq?", reply_markup=_gp_room_kb(rooms))
+    rooms = _get_rooms_from_smeta(smeta) if smeta else []
+    bathrooms = _get_bathrooms_from_smeta(smeta) if smeta else []
+    await state.update_data(
+        gp_rooms=rooms,
+        gp_bathrooms=bathrooms,
+        gp_bath_idx=0,
+        gp_bath_results={},
+    )
+    await state.set_state(GroupPhotoForm.gp_overall_pct)
+    await cq.message.edit_text(
+        "📊 *Ümumi gedişat faizi* (bütün mənzil üçün bir rəqəm):\n\n"
+        "0–100 arasında yazın. Məs: `65`",
+        parse_mode="Markdown",
+    )
     await cq.answer()
 
 
@@ -1398,29 +1445,10 @@ async def gp_type_material(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
 
 
-# ── İş gedişatı qolu ─────────────────────────────────────────────────────────
+# ── İş gedişatı qolu — Ümumi faiz ────────────────────────────────────────────
 
-@router.callback_query(F.data.startswith("gproom_"), GroupPhotoForm.gp_room)
-async def gp_room_selected(cq: CallbackQuery, state: FSMContext):
-    room_name = cq.data[7:]
-    data = await state.get_data()
-    await save_photo(
-        data["smeta_number"], room_name,
-        data["pending_file_id"], data.get("pending_caption", ""),
-        cq.from_user.id,
-    )
-    await state.update_data(selected_room=room_name)
-    await state.set_state(GroupPhotoForm.gp_pct)
-    await cq.message.edit_text(
-        f"✅ Foto *{room_name}* otağına əlavə edildi.\n\n"
-        f"📊 Gedişat neçə faizdir? *(0–100 yazın)*",
-        parse_mode="Markdown",
-    )
-    await cq.answer()
-
-
-@router.message(GroupPhotoForm.gp_pct, F.text & F.chat.type.in_({"group", "supergroup"}))
-async def gp_pct_entered(msg: Message, state: FSMContext):
+@router.message(GroupPhotoForm.gp_overall_pct, F.text & F.chat.type.in_({"group", "supergroup"}))
+async def gp_overall_pct_entered(msg: Message, state: FSMContext):
     try:
         pct = int(msg.text.strip())
         if not 0 <= pct <= 100:
@@ -1431,20 +1459,183 @@ async def gp_pct_entered(msg: Message, state: FSMContext):
 
     data = await state.get_data()
     smeta_number = data["smeta_number"]
-    room_name    = data["selected_room"]
-    await update_room_progress(smeta_number, room_name, pct, "", msg.from_user.id)
-    await state.clear()
+
+    # Ümumi gedişatı saxla
+    await update_smeta_overall_progress(smeta_number, pct)
+
+    bathrooms = data.get("gp_bathrooms", [])
+    if bathrooms:
+        await state.update_data(gp_overall=pct, gp_bath_idx=0)
+        await state.set_state(GroupPhotoForm.gp_bathroom_pct)
+        first_bath = bathrooms[0]
+        await msg.reply(
+            f"✅ Ümumi gedişat: *{pct}%*\n\n"
+            f"🛁 *{first_bath}* — neçə faiz hazırdır? (0–100)",
+            parse_mode="Markdown",
+        )
+    else:
+        # Hamam yoxdur — birbaşa elektrik checklist-ə keç
+        await state.update_data(gp_overall=pct)
+        await _start_elektrik_checklist(msg, state)
+
+
+@router.message(GroupPhotoForm.gp_bathroom_pct, F.text & F.chat.type.in_({"group", "supergroup"}))
+async def gp_bathroom_pct_entered(msg: Message, state: FSMContext):
+    try:
+        pct = int(msg.text.strip())
+        if not 0 <= pct <= 100:
+            raise ValueError
+    except ValueError:
+        await msg.reply("⚠️ 0 ilə 100 arasında rəqəm yazın.")
+        return
+
+    data = await state.get_data()
+    smeta_number = data["smeta_number"]
+    bathrooms    = data.get("gp_bathrooms", [])
+    idx          = data.get("gp_bath_idx", 0)
+    bath_results = dict(data.get("gp_bath_results", {}))
+
+    current_bath = bathrooms[idx]
+    bath_results[current_bath] = pct
+    await update_room_progress(smeta_number, current_bath, pct, "", msg.from_user.id)
+
+    next_idx = idx + 1
+    if next_idx < len(bathrooms):
+        await state.update_data(gp_bath_idx=next_idx, gp_bath_results=bath_results)
+        next_bath = bathrooms[next_idx]
+        await msg.reply(
+            f"✅ *{current_bath}*: {pct}%\n\n"
+            f"🛁 *{next_bath}* — neçə faiz hazırdır? (0–100)",
+            parse_mode="Markdown",
+        )
+    else:
+        await state.update_data(gp_bath_idx=next_idx, gp_bath_results=bath_results)
+        await _start_elektrik_checklist(msg, state)
+
+
+# ── Elektrik checklist ────────────────────────────────────────────────────────
+
+async def _start_elektrik_checklist(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    smeta_number = data["smeta_number"]
+    rooms = data.get("gp_rooms", [])
+
+    # Hər otaq üçün elektrik maddələri upsert et
+    items = []
+    for room in rooms:
+        for sub in ("Rozetka/açar", "İşıq nöqtəsi", "Açar"):
+            item_key = f"elektrik: {sub}"
+            item_id = await upsert_checklist_item(smeta_number, room, item_key)
+            items.append({"id": item_id, "room_name": room, "item": item_key, "is_checked": 0})
+
+    await state.update_data(gp_elektrik_items=items)
+    await state.set_state(GroupPhotoForm.gp_elektrik)
+    kb = _gp_checklist_kb(items, "gpel")
     await msg.reply(
-        f"✅ Gedişat yeniləndi — *{room_name}*: *{pct}%*",
+        "⚡ *Elektrik iş gedişatı* — otaq-otaq qeyd edin:\n\n"
+        "Tamamlanmış maddələri seçin:",
         parse_mode="Markdown",
+        reply_markup=kb,
     )
-    # 100% yoxlaması
+
+
+@router.callback_query(F.data.startswith("gpel_toggle_"), GroupPhotoForm.gp_elektrik)
+async def gp_elektrik_toggle(cq: CallbackQuery, state: FSMContext):
+    item_id = int(cq.data.split("_")[-1])
+    new_state = await toggle_checklist_item(item_id, cq.from_user.id)
+    data = await state.get_data()
+    items = data.get("gp_elektrik_items", [])
+    for item in items:
+        if item["id"] == item_id:
+            item["is_checked"] = 1 if new_state else 0
+            break
+    await state.update_data(gp_elektrik_items=items)
+    await cq.message.edit_reply_markup(reply_markup=_gp_checklist_kb(items, "gpel"))
+    await cq.answer("✅" if new_state else "☐")
+
+
+@router.callback_query(F.data == "gpel_done", GroupPhotoForm.gp_elektrik)
+async def gp_elektrik_done(cq: CallbackQuery, state: FSMContext):
+    await _start_santexnika_checklist(cq.message, state)
+    await cq.answer()
+
+
+# ── Santexnika checklist ──────────────────────────────────────────────────────
+
+async def _start_santexnika_checklist(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    smeta_number = data["smeta_number"]
     smeta = await get_smeta_by_number(smeta_number)
-    if smeta:
-        rooms = list(smeta["rooms_data"].keys())
-        progress_data = await get_room_progress(smeta_number)
-        if rooms and all(progress_data.get(r, {}).get("progress_pct", 0) == 100 for r in rooms):
-            await msg.answer("🎉 Layihə tamamlandı! Bu qrup arxivləndi.")
+    wet_rooms = _get_wet_rooms_from_smeta(smeta) if smeta else []
+
+    items = []
+    for room in wet_rooms:
+        for sub in ("Su borularının qoşulması", "Kanalizasiya", "Flizensmeyster işi"):
+            item_key = f"santexnika: {sub}"
+            item_id = await upsert_checklist_item(smeta_number, room, item_key)
+            items.append({"id": item_id, "room_name": room, "item": item_key, "is_checked": 0})
+
+    await state.update_data(gp_santexnika_items=items)
+    await state.set_state(GroupPhotoForm.gp_santexnika)
+
+    if not items:
+        await _finish_progress_flow(msg, state)
+        return
+
+    kb = _gp_checklist_kb(items, "gpsan")
+    await msg.reply(
+        "🚰 *Santexnika gedişatı* — nəm sahələr:\n\n"
+        "Tamamlanmış maddələri seçin:",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data.startswith("gpsan_toggle_"), GroupPhotoForm.gp_santexnika)
+async def gp_santexnika_toggle(cq: CallbackQuery, state: FSMContext):
+    item_id = int(cq.data.split("_")[-1])
+    new_state = await toggle_checklist_item(item_id, cq.from_user.id)
+    data = await state.get_data()
+    items = data.get("gp_santexnika_items", [])
+    for item in items:
+        if item["id"] == item_id:
+            item["is_checked"] = 1 if new_state else 0
+            break
+    await state.update_data(gp_santexnika_items=items)
+    await cq.message.edit_reply_markup(reply_markup=_gp_checklist_kb(items, "gpsan"))
+    await cq.answer("✅" if new_state else "☐")
+
+
+@router.callback_query(F.data == "gpsan_done", GroupPhotoForm.gp_santexnika)
+async def gp_santexnika_done(cq: CallbackQuery, state: FSMContext):
+    await _finish_progress_flow(cq.message, state)
+    await cq.answer()
+
+
+async def _finish_progress_flow(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    smeta_number = data["smeta_number"]
+    overall      = data.get("gp_overall", 0)
+    bath_results = data.get("gp_bath_results", {})
+
+    # Fotoşəkli ümumi foto kimi saxla
+    file_id = data.get("pending_file_id", "")
+    if file_id:
+        await save_photo(smeta_number, "Ümumi gedişat", file_id,
+                         data.get("pending_caption", ""), 0)
+
+    # Link
+    WEB_URL = os.getenv("WEB_URL", "https://smeta-bot-production.up.railway.app")
+    link = f"{WEB_URL}/smeta/{smeta_number}"
+
+    lines = [f"✅ *Gedişat yeniləndi!*\n"]
+    lines.append(f"📊 Ümumi: *{overall}%*")
+    for bath, pct in bath_results.items():
+        lines.append(f"🛁 {bath}: {pct}%")
+    lines.append(f"\n🔗 Müştəri linki:\n{link}")
+
+    await state.clear()
+    await msg.reply("\n".join(lines), parse_mode="Markdown")
 
 
 # ── Material qolu ─────────────────────────────────────────────────────────────
