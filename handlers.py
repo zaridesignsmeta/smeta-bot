@@ -1452,3 +1452,70 @@ async def aphoto_done(msg: Message, state: FSMContext):
         parse_mode="Markdown",
         reply_markup=main_menu_kb(msg.from_user.id),
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PRİVAT CHATDA BİRBAŞA ŞƏKİL → SMETA+OTAQ SEÇ → SAXLA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class QuickPhotoForm(StatesGroup):
+    smeta_select = State()
+    room_select  = State()
+
+
+@router.message(F.photo & F.chat.type.in_({"private"}))
+@router.message(F.document & F.document.mime_type.startswith("image/") & F.chat.type.in_({"private"}))
+async def quick_photo_received(msg: Message, state: FSMContext):
+    """İstifadəçi birbaşa şəkil göndərəndə avtomatik flow başlat"""
+    current = await state.get_state()
+    # Əgər artıq başqa state-dədirsə (addphoto, update) — keç
+    if current is not None:
+        return
+
+    file_id = msg.photo[-1].file_id if msg.photo else msg.document.file_id
+    smetas = await get_user_smeta_numbers(msg.from_user.id)
+    if not smetas:
+        await msg.answer("📂 Hələ smeta yoxdur. Əvvəlcə smeta yaradın.")
+        return
+
+    await state.set_state(QuickPhotoForm.smeta_select)
+    await state.update_data(pending_file_id=file_id, pending_caption=msg.caption or "")
+    await msg.answer(
+        "📸 Hansı smetaya əlavə edilsin?",
+        reply_markup=_photo_smeta_kb(smetas),
+    )
+
+
+@router.callback_query(F.data.startswith("aphoto_smeta_"), QuickPhotoForm.smeta_select)
+async def quick_smeta_selected(cq: CallbackQuery, state: FSMContext):
+    smeta_number = cq.data[13:]
+    smeta = await get_smeta_by_number(smeta_number)
+    if not smeta:
+        await cq.answer("Smeta tapılmadı", show_alert=True)
+        return
+    rooms = list(smeta["rooms_data"].keys())
+    await state.update_data(smeta_number=smeta_number, rooms=rooms)
+    await state.set_state(QuickPhotoForm.room_select)
+    await cq.message.edit_text(
+        f"🏠 Hansı otaq?",
+        reply_markup=_photo_room_kb(rooms),
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data.startswith("aphoto_room_"), QuickPhotoForm.room_select)
+async def quick_room_selected(cq: CallbackQuery, state: FSMContext):
+    room_name = cq.data[12:]
+    data = await state.get_data()
+    await state.clear()
+    await save_photo(
+        data["smeta_number"],
+        room_name,
+        data["pending_file_id"],
+        data.get("pending_caption", ""),
+        cq.from_user.id,
+    )
+    await cq.message.edit_text(
+        f"✅ Şəkil əlavə edildi!\n📋 {data['smeta_number']} — 🏠 {room_name}"
+    )
+    await cq.answer()
