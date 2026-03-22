@@ -63,15 +63,14 @@ async def main():
     logger.info("✅ Verilənlər bazası hazırdır")
 
     await bot.set_my_commands([
-        BotCommand(command="start",      description="Başla"),
-        BotCommand(command="newsmeta",   description="Yeni smeta yarat"),
-        BotCommand(command="mysmetas",   description="Smetalarım"),
+        BotCommand(command="start",      description="Başla / Ana menü"),
         BotCommand(command="update",     description="Gedişat yenilə"),
         BotCommand(command="addphoto",   description="Şəkil əlavə et"),
         BotCommand(command="shopping",   description="Alış siyahısı"),
         BotCommand(command="payment",    description="Ödəniş qeyd et"),
         BotCommand(command="assign",     description="İşçi təyin et"),
         BotCommand(command="report",     description="Hesabat"),
+        BotCommand(command="remind",     description="Xatırlatma yarat"),
     ])
 
     web_thread = threading.Thread(target=run_web, daemon=True)

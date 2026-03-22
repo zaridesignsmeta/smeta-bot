@@ -221,6 +221,11 @@ async def cmd_start(msg: Message, state: FSMContext):
     )
 
 
+@router.message(Command("newsmeta"))
+async def cmd_newsmeta(msg: Message, state: FSMContext):
+    await new_smeta_start(msg, state)
+
+
 @router.message(F.text == "📋 Yeni Smeta")
 async def new_smeta_start(msg: Message, state: FSMContext):
     await state.clear()
@@ -781,6 +786,11 @@ async def export_smeta(cq: CallbackQuery, state: FSMContext, bot: Bot):
 
 
 # ── Smetalarım ───────────────────────────────────────────────────────────────
+
+@router.message(Command("mysmetas"))
+async def cmd_mysmetas(msg: Message):
+    await my_smetas(msg)
+
 
 @router.message(F.text == "📁 Smetalarım")
 async def my_smetas(msg: Message):
