@@ -1215,30 +1215,30 @@ async def update_finish(cq: CallbackQuery, state: FSMContext):
 #  TELEGRAM QRUP SİSTEMİ
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@router.message(Command("linksmeta"))
-async def cmd_linksmeta(msg: Message, bot: Bot):
-    """Qrupu smetaya bağla: /linksmeta SM-2026-0001"""
-    if msg.chat.type not in ("group", "supergroup"):
-        await msg.answer("⚠️ Bu komanda yalnız qrupda istifadə edilir.")
-        return
+class LinkSmetaForm(StatesGroup):
+    smeta_select = State()
 
-    parts = msg.text.split()
-    if len(parts) < 2:
-        await msg.answer("❌ Smeta nömrəsi yazın: /linksmeta SM-2026-0001")
-        return
 
-    smeta_number = parts[1].upper()
+def _linksmeta_kb(smetas: list) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(
+            text=f"📋 {s['smeta_number']} — {s['client_name']}",
+            callback_data=f"lsmeta_pick_{s['smeta_number']}"
+        )]
+        for s in smetas
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def _do_link_group(chat_id: int, smeta_number: str) -> str:
+    """Qrupu smetaya bağla, cavab mətni qaytar"""
     smeta = await get_smeta_by_number(smeta_number)
     if not smeta:
-        await msg.answer(f"❌ *{smeta_number}* tapılmadı. Nömrəni yoxlayın.")
-        return
-
-    await link_group_to_smeta(msg.chat.id, smeta_number)
-
+        return f"❌ *{smeta_number}* tapılmadı."
+    await link_group_to_smeta(chat_id, smeta_number)
     WEB_URL = os.getenv("WEB_URL", "https://smeta-bot-production.up.railway.app")
     link = f"{WEB_URL}/smeta/{smeta_number}"
-
-    await msg.answer(
+    return (
         f"✅ *Bu qrup smetaya bağlandı!*\n\n"
         f"📋 Smeta: *{smeta_number}*\n"
         f"👤 Müştəri: {smeta['client_name']}\n"
@@ -1247,9 +1247,48 @@ async def cmd_linksmeta(msg: Message, bot: Bot):
         f"• Foto göndərin → avtomatik smetaya əlavə olunur\n"
         f"• Sənəd göndərin → saxlanılır\n"
         f"• /progress yazın → gedişatı yeniləyin\n\n"
-        f"🔗 Müştəri linki: {link}",
-        parse_mode="Markdown"
+        f"🔗 Müştəri linki: {link}"
     )
+
+
+@router.message(Command("linksmeta"))
+async def cmd_linksmeta(msg: Message, state: FSMContext, bot: Bot):
+    """Qrupu smetaya bağla: /linksmeta [SM-2026-0001]"""
+    if msg.chat.type not in ("group", "supergroup"):
+        await msg.answer("⚠️ Bu komanda yalnız qrupda istifadə edilir.")
+        return
+
+    parts = msg.text.split()
+    if len(parts) >= 2:
+        # Smeta nömrəsi birbaşa verildi
+        smeta_number = parts[1].upper()
+        text = await _do_link_group(msg.chat.id, smeta_number)
+        await msg.answer(text, parse_mode="Markdown")
+        return
+
+    # Nömrə verilməyib → smeta siyahısı göstər
+    smetas = await get_user_smeta_numbers(msg.from_user.id)
+    if not smetas:
+        await msg.answer("📂 Hələ smeta yoxdur. Əvvəlcə bot vasitəsilə smeta yaradın.")
+        return
+
+    await state.set_state(LinkSmetaForm.smeta_select)
+    await state.update_data(group_id=msg.chat.id)
+    await msg.answer(
+        "📋 Hansı smetanı bu qrupa bağlamaq istəyirsiniz?",
+        reply_markup=_linksmeta_kb(smetas),
+    )
+
+
+@router.callback_query(F.data.startswith("lsmeta_pick_"), LinkSmetaForm.smeta_select)
+async def linksmeta_pick(cq: CallbackQuery, state: FSMContext):
+    smeta_number = cq.data[12:]
+    data = await state.get_data()
+    group_id = data.get("group_id", cq.message.chat.id)
+    await state.clear()
+    text = await _do_link_group(group_id, smeta_number)
+    await cq.message.edit_text(text, parse_mode="Markdown")
+    await cq.answer()
 
 
 @router.message(F.photo & F.chat.type.in_({"group", "supergroup"}))
@@ -1317,6 +1356,15 @@ async def group_progress(msg: Message, state: FSMContext, bot: Bot):
             f"✅ *{room_name}* — {pct}% yeniləndi!",
             parse_mode="Markdown"
         )
+        # 100% yoxlaması — bütün otaqlar tam bitibsə bildiriş göndər
+        smeta = await get_smeta_by_number(smeta_number)
+        if smeta:
+            rooms = list(smeta["rooms_data"].keys())
+            progress_data = await get_room_progress(smeta_number)
+            if rooms and all(
+                progress_data.get(r, {}).get("progress_pct", 0) == 100 for r in rooms
+            ):
+                await msg.answer("🎉 Layihə tamamlandı! Bu qrup arxivləndi.")
     except (ValueError, IndexError):
         await msg.reply("❌ Format: /progress Otaq adı faiz\nMəs: /progress Qonaq otağı 75")
 
