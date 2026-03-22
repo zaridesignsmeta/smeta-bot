@@ -79,65 +79,47 @@ async def smart_smeta_start(msg: Message, state: FSMContext):
     )
     await state.set_state(SmartSmetaForm.client_info)
     await msg.answer(
-        "🤖 *Smart Smeta* — AI ilə avtomatik hesablama\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "1️⃣ Müştərinin *adı və telefonu* nədir?\n\n"
-        "_Məs: Əli Həsənov, +994501234567_",
-        parse_mode="Markdown",
+        "🤖 <b>Smart Smeta</b> — AI ilə avtomatik hesablama\n\n"
+        "1. Müştərinin <b>adı və telefonu</b> nədir?\n\n"
+        "<i>Məs: Əli Həsənov, +994501234567</i>",
+        parse_mode="HTML",
         reply_markup=ReplyKeyboardRemove(),
     )
 
 
 @router.message(SmartSmetaForm.client_info)
 async def ss_client_info(msg: Message, state: FSMContext):
+    data = await state.get_data()
     text = msg.text.strip()
-    # Ad + telefon bir xəttdə: "Əli Həsənov, +994501234567"
+
+    # If we already have the name and are waiting for phone
+    if data.get("_waiting_phone"):
+        phone = "" if text == "/skip" else text
+        await state.update_data(client_phone=phone, _waiting_phone=False)
+        await state.set_state(SmartSmetaForm.address)
+        await msg.answer(
+            "2. Obyektin <b>ünvanı</b> nədir?\n\n"
+            "<i>Məs: Neftçilər pr. 123, Bakı</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    # First message: parse "Ad Soyad, +994XXXXXXXXX" or just name
     if "," in text:
         parts = text.split(",", 1)
         name  = parts[0].strip()
         phone = parts[1].strip()
-    else:
-        name  = text
-        phone = ""
-    await state.update_data(client_name=name, client_phone=phone)
-
-    if not phone:
-        # Telefon ayrıca soruş
-        await state.set_state(SmartSmetaForm.address)   # skip phone step
-        await msg.answer(
-            "📞 Telefon nömrəsini daxil edin _(ya da /skip)_:",
-            parse_mode="Markdown",
-        )
-        # Actually ask for phone first
-        await state.set_state(SmartSmetaForm.client_info)
-        await state.update_data(_waiting_phone=True)
-        await msg.answer(
-            "📞 Telefon nömrəsini daxil edin:",
-        )
-        return
-
-    await state.set_state(SmartSmetaForm.address)
-    await msg.answer(
-        "2️⃣ Obyektin *ünvanı* nədir?\n\n"
-        "_Məs: Neftçilər pr. 123, Bakı_",
-        parse_mode="Markdown",
-    )
-
-
-@router.message(SmartSmetaForm.client_info)
-async def ss_phone(msg: Message, state: FSMContext):
-    data = await state.get_data()
-    if data.get("_waiting_phone"):
-        phone = msg.text.strip()
-        if phone == "/skip":
-            phone = ""
-        await state.update_data(client_phone=phone, _waiting_phone=False)
+        await state.update_data(client_name=name, client_phone=phone)
         await state.set_state(SmartSmetaForm.address)
         await msg.answer(
-            "2️⃣ Obyektin *ünvanı* nədir?\n\n"
-            "_Məs: Neftçilər pr. 123, Bakı_",
-            parse_mode="Markdown",
+            "2. Obyektin <b>ünvanı</b> nədir?\n\n"
+            "<i>Məs: Neftçilər pr. 123, Bakı</i>",
+            parse_mode="HTML",
         )
+    else:
+        # Name only — ask for phone separately
+        await state.update_data(client_name=text, _waiting_phone=True)
+        await msg.answer("📞 Telefon nömrəsini daxil edin (yoxdursa /skip yazın):")
 
 
 @router.message(SmartSmetaForm.address)
