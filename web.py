@@ -1,5 +1,5 @@
 from flask import Flask, render_template_string, Response
-import aiosqlite
+import asyncpg
 import asyncio
 import json
 import os
@@ -537,93 +537,86 @@ function closeLB() { document.getElementById('lb').classList.remove('open'); }
 
 
 async def get_data_async(smeta_number):
-    db_path = os.getenv("DB_PATH", "smeta_bot.db")
+    from database import get_pool
+    pool = await get_pool()
     result = {}
-    async with aiosqlite.connect(db_path) as db:
-        db.row_factory = aiosqlite.Row
 
-        async with db.execute("SELECT * FROM smetas WHERE smeta_number=?", (smeta_number,)) as cur:
-            row = await cur.fetchone()
-            if not row:
-                return None
-            d = dict(row)
-            d["rooms_data"] = json.loads(d["rooms_data"])
-            result["smeta"] = d
+    async with pool.acquire() as db:
+        row = await db.fetchrow(
+            "SELECT * FROM smetas WHERE smeta_number=$1", smeta_number
+        )
+        if not row:
+            return None
+        d = dict(row)
+        d["rooms_data"] = json.loads(d["rooms_data"])
+        result["smeta"] = d
 
         progress = {}
         try:
-            async with db.execute("SELECT * FROM room_progress WHERE smeta_number=?", (smeta_number,)) as cur:
-                for row in await cur.fetchall():
-                    r = dict(row)
-                    progress[r["room_name"]] = r
+            rows = await db.fetch(
+                "SELECT * FROM room_progress WHERE smeta_number=$1", smeta_number
+            )
+            for r in rows:
+                rd = dict(r)
+                progress[rd["room_name"]] = rd
         except Exception:
             pass
         result["progress"] = progress
 
         photos_by_room = {}
         try:
-            async with db.execute(
-                "SELECT * FROM smeta_photos WHERE smeta_number=? ORDER BY created_at DESC",
-                (smeta_number,)
-            ) as cur:
-                for row in await cur.fetchall():
-                    p = dict(row)
-                    room = p.get("room_name", "Ümumi")
-                    if room not in photos_by_room:
-                        photos_by_room[room] = []
-                    photos_by_room[room].append(p)
+            rows = await db.fetch(
+                "SELECT * FROM smeta_photos WHERE smeta_number=$1 ORDER BY created_at DESC",
+                smeta_number
+            )
+            for r in rows:
+                p = dict(r)
+                room = p.get("room_name", "Ümumi")
+                photos_by_room.setdefault(room, []).append(p)
         except Exception:
             pass
         result["photos_by_room"] = photos_by_room
 
-        materials = []
         try:
-            async with db.execute(
-                "SELECT * FROM materials WHERE smeta_number=? ORDER BY created_at",
-                (smeta_number,)
-            ) as cur:
-                materials = [dict(r) for r in await cur.fetchall()]
+            rows = await db.fetch(
+                "SELECT * FROM materials WHERE smeta_number=$1 ORDER BY created_at",
+                smeta_number
+            )
+            result["materials"] = [dict(r) for r in rows]
         except Exception:
-            pass
-        result["materials"] = materials
+            result["materials"] = []
 
         checklist_by_room = {}
         try:
-            async with db.execute(
-                "SELECT * FROM checklist WHERE smeta_number=? ORDER BY room_name, created_at",
-                (smeta_number,)
-            ) as cur:
-                for row in await cur.fetchall():
-                    item = dict(row)
-                    room = item.get("room_name", "Ümumi")
-                    if room not in checklist_by_room:
-                        checklist_by_room[room] = []
-                    checklist_by_room[room].append(item)
+            rows = await db.fetch(
+                "SELECT * FROM checklist WHERE smeta_number=$1 ORDER BY room_name, created_at",
+                smeta_number
+            )
+            for r in rows:
+                item = dict(r)
+                room = item.get("room_name", "Ümumi")
+                checklist_by_room.setdefault(room, []).append(item)
         except Exception:
             pass
         result["checklist_by_room"] = checklist_by_room
 
-        payments = []
         try:
-            async with db.execute(
-                "SELECT * FROM payments WHERE smeta_number=? ORDER BY created_at DESC",
-                (smeta_number,)
-            ) as cur:
-                payments = [dict(r) for r in await cur.fetchall()]
+            rows = await db.fetch(
+                "SELECT * FROM payments WHERE smeta_number=$1 ORDER BY created_at DESC",
+                smeta_number
+            )
+            result["payments"] = [dict(r) for r in rows]
         except Exception:
-            pass
-        result["payments"] = payments
+            result["payments"] = []
 
-        shopping_list = []
         try:
-            async with db.execute(
-                "SELECT * FROM shopping_list WHERE smeta_number=? ORDER BY priority, created_at",
-                (smeta_number,)
-            ) as cur:
-                shopping_list = [dict(r) for r in await cur.fetchall()]
+            rows = await db.fetch(
+                "SELECT * FROM shopping_list WHERE smeta_number=$1 ORDER BY priority, created_at",
+                smeta_number
+            )
+            result["shopping_list"] = [dict(r) for r in rows]
         except Exception:
-            pass
-        result["shopping_list"] = shopping_list
+            result["shopping_list"] = []
 
     return result
 
