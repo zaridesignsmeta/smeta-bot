@@ -30,6 +30,7 @@ from database import (
     get_smeta_by_number, get_user_smeta_numbers,
     link_group_to_smeta, get_smeta_by_group, get_group_by_smeta,
     get_total_paid, init_checklist_for_smeta,
+    add_material, get_materials, update_material_status,
 )
 from generators import generate_excel, generate_pdf
 
@@ -38,6 +39,7 @@ from handlers_payment  import router as payment_router
 from handlers_worker   import router as worker_router
 from handlers_project  import router as project_router
 from handlers_reminder import router as reminder_router
+from handlers_material import router as material_router
 from handlers_report   import router as report_router
 
 router = Router()
@@ -46,6 +48,7 @@ router.include_router(worker_router)
 router.include_router(project_router)
 router.include_router(reminder_router)
 router.include_router(report_router)
+router.include_router(material_router)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1212,30 +1215,30 @@ async def update_finish(cq: CallbackQuery, state: FSMContext):
 #  TELEGRAM QRUP SİSTEMİ
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@router.message(Command("linksmeta"))
-async def cmd_linksmeta(msg: Message, bot: Bot):
-    """Qrupu smetaya bağla: /linksmeta SM-2026-0001"""
-    if msg.chat.type not in ("group", "supergroup"):
-        await msg.answer("⚠️ Bu komanda yalnız qrupda istifadə edilir.")
-        return
+class LinkSmetaForm(StatesGroup):
+    smeta_select = State()
 
-    parts = msg.text.split()
-    if len(parts) < 2:
-        await msg.answer("❌ Smeta nömrəsi yazın: /linksmeta SM-2026-0001")
-        return
 
-    smeta_number = parts[1].upper()
+def _linksmeta_kb(smetas: list) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(
+            text=f"📋 {s['smeta_number']} — {s['client_name']}",
+            callback_data=f"lsmeta_pick_{s['smeta_number']}"
+        )]
+        for s in smetas
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def _do_link_group(chat_id: int, smeta_number: str) -> str:
+    """Qrupu smetaya bağla, cavab mətni qaytar"""
     smeta = await get_smeta_by_number(smeta_number)
     if not smeta:
-        await msg.answer(f"❌ *{smeta_number}* tapılmadı. Nömrəni yoxlayın.")
-        return
-
-    await link_group_to_smeta(msg.chat.id, smeta_number)
-
+        return f"❌ *{smeta_number}* tapılmadı."
+    await link_group_to_smeta(chat_id, smeta_number)
     WEB_URL = os.getenv("WEB_URL", "https://smeta-bot-production.up.railway.app")
     link = f"{WEB_URL}/smeta/{smeta_number}"
-
-    await msg.answer(
+    return (
         f"✅ *Bu qrup smetaya bağlandı!*\n\n"
         f"📋 Smeta: *{smeta_number}*\n"
         f"👤 Müştəri: {smeta['client_name']}\n"
@@ -1244,15 +1247,111 @@ async def cmd_linksmeta(msg: Message, bot: Bot):
         f"• Foto göndərin → avtomatik smetaya əlavə olunur\n"
         f"• Sənəd göndərin → saxlanılır\n"
         f"• /progress yazın → gedişatı yeniləyin\n\n"
-        f"🔗 Müştəri linki: {link}",
-        parse_mode="Markdown"
+        f"🔗 Müştəri linki: {link}"
     )
 
 
+@router.message(Command("linksmeta"))
+async def cmd_linksmeta(msg: Message, state: FSMContext, bot: Bot):
+    """Qrupu smetaya bağla: /linksmeta [SM-2026-0001]"""
+    if msg.chat.type not in ("group", "supergroup"):
+        await msg.answer("⚠️ Bu komanda yalnız qrupda istifadə edilir.")
+        return
+
+    parts = msg.text.split()
+    if len(parts) >= 2:
+        # Smeta nömrəsi birbaşa verildi
+        smeta_number = parts[1].upper()
+        text = await _do_link_group(msg.chat.id, smeta_number)
+        await msg.answer(text, parse_mode="Markdown")
+        return
+
+    # Nömrə verilməyib → smeta siyahısı göstər
+    smetas = await get_user_smeta_numbers(msg.from_user.id)
+    if not smetas:
+        await msg.answer("📂 Hələ smeta yoxdur. Əvvəlcə bot vasitəsilə smeta yaradın.")
+        return
+
+    await state.set_state(LinkSmetaForm.smeta_select)
+    await state.update_data(group_id=msg.chat.id)
+    await msg.answer(
+        "📋 Hansı smetanı bu qrupa bağlamaq istəyirsiniz?",
+        reply_markup=_linksmeta_kb(smetas),
+    )
+
+
+@router.callback_query(F.data.startswith("lsmeta_pick_"), LinkSmetaForm.smeta_select)
+async def linksmeta_pick(cq: CallbackQuery, state: FSMContext):
+    smeta_number = cq.data[12:]
+    data = await state.get_data()
+    group_id = data.get("group_id", cq.message.chat.id)
+    await state.clear()
+    text = await _do_link_group(group_id, smeta_number)
+    await cq.message.edit_text(text, parse_mode="Markdown")
+    await cq.answer()
+
+
+# ── Qrup foto FSM ────────────────────────────────────────────────────────────
+
+class GroupPhotoForm(StatesGroup):
+    photo_type     = State()   # material mi, gedişat mi?
+    gp_room        = State()   # otaq seç
+    gp_pct         = State()   # gedişat faizi
+    gp_mat_what    = State()   # material seç / yaz
+    gp_mat_qty     = State()   # miqdar
+    gp_mat_receipt = State()   # qaimə var?
+
+
+def _gp_type_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Material gəldi",  callback_data="gp_type_material")],
+        [InlineKeyboardButton(text="🏗️ İş gedişatı",    callback_data="gp_type_progress")],
+    ])
+
+
+def _gp_room_kb(rooms: list) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text=f"🏠 {r}", callback_data=f"gproom_{r}")]
+        for r in rooms
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _gp_mat_kb(materials: list) -> InlineKeyboardMarkup:
+    pending = [m for m in materials if m.get("status") == "pending"]
+    buttons = [
+        [InlineKeyboardButton(
+            text=f"📦 {m['name']}" + (f" ({m['qty_needed']} {m['unit']})" if m.get("unit") else ""),
+            callback_data=f"gpmat_{m['id']}"
+        )]
+        for m in pending
+    ]
+    buttons.append([InlineKeyboardButton(text="✏️ Yeni material", callback_data="gpmat_new")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _gp_receipt_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Var — göndərirəm", callback_data="gp_receipt_yes")],
+        [InlineKeyboardButton(text="❌ Yoxdur",           callback_data="gp_receipt_no")],
+    ])
+
+
 @router.message(F.photo & F.chat.type.in_({"group", "supergroup"}))
-async def group_photo_received(msg: Message, bot: Bot):
-    """Qrupda foto gəldikdə avtomatik smetaya əlavə et"""
+async def group_photo_received(msg: Message, state: FSMContext):
+    """Qrupda foto gəldikdə flow başlat"""
     if not msg.photo:
+        return
+
+    current = await state.get_state()
+
+    # Qaimə şəklini gözləyiriksə — onu qəbul et
+    if current == GroupPhotoForm.gp_mat_receipt:
+        await _gp_save_receipt_photo(msg, state)
+        return
+
+    # Başqa aktiv state varsa — keç
+    if current is not None:
         return
 
     smeta_number = await get_smeta_by_group(msg.chat.id)
@@ -1264,23 +1363,192 @@ async def group_photo_received(msg: Message, bot: Bot):
         return
 
     file_id = msg.photo[-1].file_id
-    caption = msg.caption or ""
-    room_name = "Ümumi"
-
-    if caption:
-        smeta = await get_smeta_by_number(smeta_number)
-        if smeta:
-            for room in smeta["rooms_data"].keys():
-                if room.lower() in caption.lower():
-                    room_name = room
-                    break
-
-    await save_photo(smeta_number, room_name, file_id, caption, msg.from_user.id)
-    await msg.reply(
-        f"✅ Foto *{smeta_number}* smetasına əlavə edildi.\n"
-        f"🏠 Otaq: {room_name}",
-        parse_mode="Markdown"
+    await state.set_state(GroupPhotoForm.photo_type)
+    await state.update_data(
+        smeta_number=smeta_number,
+        pending_file_id=file_id,
+        pending_caption=msg.caption or "",
+        group_chat_id=msg.chat.id,
     )
+    await msg.reply("📸 Bu şəkil nədir?", reply_markup=_gp_type_kb())
+
+
+# ── Tip seçimi ────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "gp_type_progress", GroupPhotoForm.photo_type)
+async def gp_type_progress(cq: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    smeta = await get_smeta_by_number(data["smeta_number"])
+    rooms = list(smeta["rooms_data"].keys()) if smeta else []
+    await state.set_state(GroupPhotoForm.gp_room)
+    await cq.message.edit_text("🏠 Hansı otaq?", reply_markup=_gp_room_kb(rooms))
+    await cq.answer()
+
+
+@router.callback_query(F.data == "gp_type_material", GroupPhotoForm.photo_type)
+async def gp_type_material(cq: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    materials = await get_materials(data["smeta_number"])
+    await state.update_data(materials=materials)
+    await state.set_state(GroupPhotoForm.gp_mat_what)
+    await cq.message.edit_text(
+        "📦 Nə gəldi? Siyahıdan seçin və ya 'Yeni material' yazın:",
+        reply_markup=_gp_mat_kb(materials),
+    )
+    await cq.answer()
+
+
+# ── İş gedişatı qolu ─────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("gproom_"), GroupPhotoForm.gp_room)
+async def gp_room_selected(cq: CallbackQuery, state: FSMContext):
+    room_name = cq.data[7:]
+    data = await state.get_data()
+    await save_photo(
+        data["smeta_number"], room_name,
+        data["pending_file_id"], data.get("pending_caption", ""),
+        cq.from_user.id,
+    )
+    await state.update_data(selected_room=room_name)
+    await state.set_state(GroupPhotoForm.gp_pct)
+    await cq.message.edit_text(
+        f"✅ Foto *{room_name}* otağına əlavə edildi.\n\n"
+        f"📊 Gedişat neçə faizdir? *(0–100 yazın)*",
+        parse_mode="Markdown",
+    )
+    await cq.answer()
+
+
+@router.message(GroupPhotoForm.gp_pct, F.text & F.chat.type.in_({"group", "supergroup"}))
+async def gp_pct_entered(msg: Message, state: FSMContext):
+    try:
+        pct = int(msg.text.strip())
+        if not 0 <= pct <= 100:
+            raise ValueError
+    except ValueError:
+        await msg.reply("⚠️ 0 ilə 100 arasında rəqəm yazın.")
+        return
+
+    data = await state.get_data()
+    smeta_number = data["smeta_number"]
+    room_name    = data["selected_room"]
+    await update_room_progress(smeta_number, room_name, pct, "", msg.from_user.id)
+    await state.clear()
+    await msg.reply(
+        f"✅ Gedişat yeniləndi — *{room_name}*: *{pct}%*",
+        parse_mode="Markdown",
+    )
+    # 100% yoxlaması
+    smeta = await get_smeta_by_number(smeta_number)
+    if smeta:
+        rooms = list(smeta["rooms_data"].keys())
+        progress_data = await get_room_progress(smeta_number)
+        if rooms and all(progress_data.get(r, {}).get("progress_pct", 0) == 100 for r in rooms):
+            await msg.answer("🎉 Layihə tamamlandı! Bu qrup arxivləndi.")
+
+
+# ── Material qolu ─────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("gpmat_"), GroupPhotoForm.gp_mat_what)
+async def gp_mat_what_selected(cq: CallbackQuery, state: FSMContext):
+    val = cq.data[6:]
+    if val == "new":
+        await state.update_data(mat_id=None, mat_name=None)
+        await cq.message.answer("✏️ Material adını yazın:")
+        await cq.answer()
+        return
+    mat_id = int(val)
+    data = await state.get_data()
+    mat = next((m for m in data.get("materials", []) if m["id"] == mat_id), None)
+    mat_name = mat["name"] if mat else str(mat_id)
+    await state.update_data(mat_id=mat_id, mat_name=mat_name)
+    await state.set_state(GroupPhotoForm.gp_mat_qty)
+    await cq.message.edit_text(
+        f"📦 *{mat_name}*\n\nNə qədər gəldi? _(məs: 50 kisə)_",
+        parse_mode="Markdown",
+    )
+    await cq.answer()
+
+
+@router.message(GroupPhotoForm.gp_mat_what, F.text & F.chat.type.in_({"group", "supergroup"}))
+async def gp_mat_what_typed(msg: Message, state: FSMContext):
+    mat_name = msg.text.strip()
+    await state.update_data(mat_id=None, mat_name=mat_name)
+    await state.set_state(GroupPhotoForm.gp_mat_qty)
+    await msg.reply(
+        f"📦 *{mat_name}*\n\nNə qədər gəldi? _(məs: 50 kisə)_",
+        parse_mode="Markdown",
+    )
+
+
+@router.message(GroupPhotoForm.gp_mat_qty, F.text & F.chat.type.in_({"group", "supergroup"}))
+async def gp_mat_qty_entered(msg: Message, state: FSMContext):
+    parts = msg.text.strip().split()
+    try:
+        qty = float(parts[0])
+    except ValueError:
+        await msg.reply("⚠️ Rəqəm yazın, məs: `50` və ya `50 kisə`", parse_mode="Markdown")
+        return
+    unit = " ".join(parts[1:]) if len(parts) > 1 else "ədəd"
+    await state.update_data(mat_qty=qty, mat_unit=unit)
+    await state.set_state(GroupPhotoForm.gp_mat_receipt)
+    await msg.reply(
+        f"✅ *{qty} {unit}*\n\nQaimə var?",
+        parse_mode="Markdown",
+        reply_markup=_gp_receipt_kb(),
+    )
+
+
+@router.callback_query(F.data == "gp_receipt_no", GroupPhotoForm.gp_mat_receipt)
+async def gp_receipt_no(cq: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await _gp_finish_material(cq.from_user.id, data, receipt_file_id=None)
+    await state.clear()
+    await cq.message.edit_text(
+        f"✅ Material qeyd edildi!\n"
+        f"📦 {data.get('mat_name')} — {data.get('mat_qty')} {data.get('mat_unit','ədəd')}\n"
+        f"📋 {data.get('smeta_number')}"
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data == "gp_receipt_yes", GroupPhotoForm.gp_mat_receipt)
+async def gp_receipt_yes(cq: CallbackQuery, state: FSMContext):
+    await cq.message.answer("🧾 Qaimənin şəklini göndərin:")
+    await cq.answer()
+
+
+async def _gp_save_receipt_photo(msg: Message, state: FSMContext):
+    receipt_file_id = msg.photo[-1].file_id
+    data = await state.get_data()
+    await _gp_finish_material(msg.from_user.id, data, receipt_file_id=receipt_file_id)
+    await state.clear()
+    await msg.reply(
+        f"✅ Material və qaimə qeyd edildi!\n"
+        f"📦 {data.get('mat_name')} — {data.get('mat_qty')} {data.get('mat_unit','ədəd')}\n"
+        f"📋 {data.get('smeta_number')}"
+    )
+
+
+async def _gp_finish_material(user_id: int, data: dict, receipt_file_id: str | None):
+    smeta_number  = data.get("smeta_number", "")
+    mat_name      = data.get("mat_name", "")
+    mat_qty       = data.get("mat_qty", 0)
+    mat_unit      = data.get("mat_unit", "ədəd")
+    mat_id        = data.get("mat_id")
+    photo_file_id = data.get("pending_file_id", "")
+    notes         = f"qaimə: {receipt_file_id}" if receipt_file_id else ""
+
+    if mat_id:
+        await update_material_status(mat_id, qty_bought=mat_qty, status="bought", notes=notes)
+    else:
+        new_id = await add_material(smeta_number, mat_name, mat_unit, mat_qty, 0, user_id)
+        await update_material_status(new_id, qty_bought=mat_qty, status="bought", notes=notes)
+
+    if photo_file_id:
+        await save_photo(smeta_number, f"Material: {mat_name}", photo_file_id, mat_name, user_id)
+    if receipt_file_id:
+        await save_photo(smeta_number, f"Qaimə: {mat_name}", receipt_file_id, f"Qaimə — {mat_name}", user_id)
 
 
 @router.message(Command("progress") & F.chat.type.in_({"group", "supergroup"}))
@@ -1314,6 +1582,15 @@ async def group_progress(msg: Message, state: FSMContext, bot: Bot):
             f"✅ *{room_name}* — {pct}% yeniləndi!",
             parse_mode="Markdown"
         )
+        # 100% yoxlaması — bütün otaqlar tam bitibsə bildiriş göndər
+        smeta = await get_smeta_by_number(smeta_number)
+        if smeta:
+            rooms = list(smeta["rooms_data"].keys())
+            progress_data = await get_room_progress(smeta_number)
+            if rooms and all(
+                progress_data.get(r, {}).get("progress_pct", 0) == 100 for r in rooms
+            ):
+                await msg.answer("🎉 Layihə tamamlandı! Bu qrup arxivləndi.")
     except (ValueError, IndexError):
         await msg.reply("❌ Format: /progress Otaq adı faiz\nMəs: /progress Qonaq otağı 75")
 
@@ -1452,3 +1729,264 @@ async def aphoto_done(msg: Message, state: FSMContext):
         parse_mode="Markdown",
         reply_markup=main_menu_kb(msg.from_user.id),
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PRİVAT CHATDA BİRBAŞA ŞƏKİL → NƏDİR? → SAXLA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class QuickPhotoForm(StatesGroup):
+    photo_type   = State()   # material mi, gedişat mi?
+    # --- iş gedişatı qolu ---
+    smeta_select = State()
+    room_select  = State()
+    # --- material qolu ---
+    mat_smeta    = State()   # hansı smeta?
+    mat_what     = State()   # nə gəldi? (seç və ya yaz)
+    mat_qty      = State()   # nə qədər gəldi?
+    mat_receipt  = State()   # qaimə var?
+
+
+def _photo_type_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Material gəldi",   callback_data="qp_type_material")],
+        [InlineKeyboardButton(text="🏗️ İş gedişatı",     callback_data="qp_type_progress")],
+    ])
+
+
+def _mat_list_kb(materials: list, smeta_number: str) -> InlineKeyboardMarkup:
+    """Pending materiallar + 'Yeni' seçimi"""
+    pending = [m for m in materials if m["status"] == "pending"]
+    buttons = [
+        [InlineKeyboardButton(
+            text=f"📦 {m['name']}" + (f" ({m['qty_needed']} {m['unit']})" if m.get("unit") else ""),
+            callback_data=f"qp_mat_{m['id']}"
+        )]
+        for m in pending
+    ]
+    buttons.append([InlineKeyboardButton(text="✏️ Digər (yaz)", callback_data="qp_mat_new")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _receipt_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Var — göndərirəm", callback_data="qp_receipt_yes")],
+        [InlineKeyboardButton(text="❌ Yoxdur",           callback_data="qp_receipt_no")],
+    ])
+
+
+# ── Şəkil qəbulu ──────────────────────────────────────────────────────────────
+
+@router.message(F.photo & F.chat.type.in_({"private"}))
+@router.message(F.document & F.document.mime_type.startswith("image/") & F.chat.type.in_({"private"}))
+async def quick_photo_received(msg: Message, state: FSMContext):
+    current = await state.get_state()
+    # Qaimə şəklini gözləyiriksə — onu qəbul et
+    if current == QuickPhotoForm.mat_receipt:
+        await _save_receipt_photo(msg, state)
+        return
+    # Başqa aktiv state varsa — keç (addphoto, update, s.)
+    if current is not None:
+        return
+
+    file_id = msg.photo[-1].file_id if msg.photo else msg.document.file_id
+    smetas = await get_user_smeta_numbers(msg.from_user.id)
+    if not smetas:
+        await msg.answer("📂 Hələ smeta yoxdur. Əvvəlcə smeta yaradın.")
+        return
+
+    await state.set_state(QuickPhotoForm.photo_type)
+    await state.update_data(
+        pending_file_id=file_id,
+        pending_caption=msg.caption or "",
+        smetas=smetas,
+    )
+    await msg.answer(
+        "📸 Bu şəkil nədir?",
+        reply_markup=_photo_type_kb(),
+    )
+
+
+# ── Tip seçimi ────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "qp_type_progress", QuickPhotoForm.photo_type)
+async def qp_type_progress(cq: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    smetas = data.get("smetas", [])
+    await state.set_state(QuickPhotoForm.smeta_select)
+    await cq.message.edit_text(
+        "📋 Hansı smetaya əlavə edilsin?",
+        reply_markup=_photo_smeta_kb(smetas),
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data == "qp_type_material", QuickPhotoForm.photo_type)
+async def qp_type_material(cq: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    smetas = data.get("smetas", [])
+    await state.set_state(QuickPhotoForm.mat_smeta)
+    await cq.message.edit_text(
+        "📋 Hansı smetaya aiddir?",
+        reply_markup=_photo_smeta_kb(smetas),
+    )
+    await cq.answer()
+
+
+# ── İş gedişatı qolu ──────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("aphoto_smeta_"), QuickPhotoForm.smeta_select)
+async def quick_smeta_selected(cq: CallbackQuery, state: FSMContext):
+    smeta_number = cq.data[13:]
+    smeta = await get_smeta_by_number(smeta_number)
+    if not smeta:
+        await cq.answer("Smeta tapılmadı", show_alert=True)
+        return
+    rooms = list(smeta["rooms_data"].keys())
+    await state.update_data(smeta_number=smeta_number, rooms=rooms)
+    await state.set_state(QuickPhotoForm.room_select)
+    await cq.message.edit_text(
+        "🏠 Hansı otaq?",
+        reply_markup=_photo_room_kb(rooms),
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data.startswith("aphoto_room_"), QuickPhotoForm.room_select)
+async def quick_room_selected(cq: CallbackQuery, state: FSMContext):
+    room_name = cq.data[12:]
+    data = await state.get_data()
+    await state.clear()
+    await save_photo(
+        data["smeta_number"],
+        room_name,
+        data["pending_file_id"],
+        data.get("pending_caption", ""),
+        cq.from_user.id,
+    )
+    await cq.message.edit_text(
+        f"✅ Şəkil əlavə edildi!\n📋 {data['smeta_number']} — 🏠 {room_name}"
+    )
+    await cq.answer()
+
+
+# ── Material qolu ─────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("aphoto_smeta_"), QuickPhotoForm.mat_smeta)
+async def qp_mat_smeta_selected(cq: CallbackQuery, state: FSMContext):
+    smeta_number = cq.data[13:]
+    await state.update_data(smeta_number=smeta_number)
+    materials = await get_materials(smeta_number)
+    await state.set_state(QuickPhotoForm.mat_what)
+    await state.update_data(materials=materials)
+    await cq.message.edit_text(
+        "📦 Nə gəldi? Siyahıdan seçin və ya 'Digər' yazın:",
+        reply_markup=_mat_list_kb(materials, smeta_number),
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data.startswith("qp_mat_"), QuickPhotoForm.mat_what)
+async def qp_mat_what_selected(cq: CallbackQuery, state: FSMContext):
+    val = cq.data[7:]  # "new" OR material id
+    if val == "new":
+        await state.update_data(mat_id=None, mat_name=None)
+        await cq.message.answer("✏️ Material adını yazın:")
+        await cq.answer()
+        return
+    mat_id = int(val)
+    data = await state.get_data()
+    materials = data.get("materials", [])
+    mat = next((m for m in materials if m["id"] == mat_id), None)
+    mat_name = mat["name"] if mat else str(mat_id)
+    await state.update_data(mat_id=mat_id, mat_name=mat_name)
+    await state.set_state(QuickPhotoForm.mat_qty)
+    await cq.message.edit_text(f"📦 *{mat_name}*\n\nNə qədər gəldi? (rəqəm yazın, məs: `50`)", parse_mode="Markdown")
+    await cq.answer()
+
+
+@router.message(QuickPhotoForm.mat_what, F.text)
+async def qp_mat_what_typed(msg: Message, state: FSMContext):
+    mat_name = msg.text.strip()
+    await state.update_data(mat_id=None, mat_name=mat_name)
+    await state.set_state(QuickPhotoForm.mat_qty)
+    await msg.answer(f"📦 *{mat_name}*\n\nNə qədər gəldi? (rəqəm yazın, məs: `50`)", parse_mode="Markdown")
+
+
+@router.message(QuickPhotoForm.mat_qty, F.text)
+async def qp_mat_qty(msg: Message, state: FSMContext):
+    qty_text = msg.text.strip()
+    # Rəqəm + vahid: "50 kisə", "20 litr", "100"
+    parts = qty_text.split()
+    try:
+        qty = float(parts[0])
+    except ValueError:
+        await msg.answer("⚠️ Rəqəm yazın, məs: `50` və ya `50 kisə`", parse_mode="Markdown")
+        return
+    unit = " ".join(parts[1:]) if len(parts) > 1 else "ədəd"
+    await state.update_data(mat_qty=qty, mat_unit=unit)
+    await state.set_state(QuickPhotoForm.mat_receipt)
+    await msg.answer(
+        f"✅ *{qty} {unit}*\n\nQaimə var?",
+        parse_mode="Markdown",
+        reply_markup=_receipt_kb(),
+    )
+
+
+@router.callback_query(F.data == "qp_receipt_no", QuickPhotoForm.mat_receipt)
+async def qp_receipt_no(cq: CallbackQuery, state: FSMContext):
+    await _finish_material(cq.from_user.id, state, receipt_file_id=None)
+    data = await state.get_data()
+    await state.clear()
+    await cq.message.edit_text(
+        f"✅ Material qeydə alındı!\n"
+        f"📦 {data.get('mat_name')} — {data.get('mat_qty')} {data.get('mat_unit','ədəd')}\n"
+        f"📋 {data.get('smeta_number')}"
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data == "qp_receipt_yes", QuickPhotoForm.mat_receipt)
+async def qp_receipt_yes(cq: CallbackQuery, state: FSMContext):
+    await cq.message.answer("🧾 Qaimənin şəklini göndərin:")
+    await cq.answer()
+
+
+async def _save_receipt_photo(msg: Message, state: FSMContext):
+    receipt_file_id = msg.photo[-1].file_id if msg.photo else msg.document.file_id
+    data = await state.get_data()
+    await _finish_material(msg.from_user.id, state, receipt_file_id=receipt_file_id)
+    await state.clear()
+    await msg.answer(
+        f"✅ Material və qaimə qeydə alındı!\n"
+        f"📦 {data.get('mat_name')} — {data.get('mat_qty')} {data.get('mat_unit','ədəd')}\n"
+        f"📋 {data.get('smeta_number')}"
+    )
+
+
+async def _finish_material(user_id: int, state: FSMContext, receipt_file_id: str | None):
+    """Material məlumatlarını DB-yə yaz"""
+    data = await state.get_data()
+    smeta_number  = data.get("smeta_number", "")
+    mat_name      = data.get("mat_name", "")
+    mat_qty       = data.get("mat_qty", 0)
+    mat_unit      = data.get("mat_unit", "ədəd")
+    mat_id        = data.get("mat_id")
+    photo_file_id = data.get("pending_file_id", "")
+    notes         = f"qaimə: {receipt_file_id}" if receipt_file_id else ""
+
+    if mat_id:
+        # Mövcud material — kəmiyyəti yenilə
+        await update_material_status(mat_id, qty_bought=mat_qty, status="bought", notes=notes)
+    else:
+        # Yeni material — əlavə et və bought işarələ
+        new_id = await add_material(smeta_number, mat_name, mat_unit, mat_qty, 0, user_id)
+        await update_material_status(new_id, qty_bought=mat_qty, status="bought", notes=notes)
+
+    # Material şəklini saxla
+    if photo_file_id:
+        await save_photo(smeta_number, f"Material: {mat_name}", photo_file_id, mat_name, user_id)
+
+    # Qaimə şəklini saxla
+    if receipt_file_id:
+        await save_photo(smeta_number, f"Qaimə: {mat_name}", receipt_file_id, f"Qaimə — {mat_name}", user_id)
