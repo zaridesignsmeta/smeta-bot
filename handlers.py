@@ -1742,7 +1742,7 @@ async def _gp_finish_material(user_id: int, data: dict, receipt_file_id: str | N
         await save_photo(smeta_number, f"Qaimə: {mat_name}", receipt_file_id, f"Qaimə — {mat_name}", user_id)
 
 
-@router.message(Command("progress") & F.chat.type.in_({"group", "supergroup"}))
+@router.message(Command("progress"), F.chat.type.in_({"group", "supergroup"}))
 async def group_progress(msg: Message, state: FSMContext, bot: Bot):
     """Qrupda gedişat yenilə: /progress Qonaq otağı 75"""
     smeta_number = await get_smeta_by_group(msg.chat.id)
