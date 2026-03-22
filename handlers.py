@@ -826,7 +826,7 @@ async def view_smeta(cq: CallbackQuery):
         f"📍 {smeta['address']}\n"
         f"💰 *{smeta['total']:,.2f} {CURRENCY}*\n"
         f"📊 Status: {status_map.get(smeta['status'], smeta['status'])}\n"
-        f"📅 {smeta['created_at'][:10]}",
+        f"📅 {str(smeta['created_at'])[:10]}",
         parse_mode="Markdown",
         reply_markup=smeta_action_kb(smeta_id)
     )

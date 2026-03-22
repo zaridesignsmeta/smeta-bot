@@ -26,8 +26,8 @@ DEFAULT_MARGIN = 20       # Marja / qazanc faizi (%) — müştəriyə göstəri
 DEFAULT_DISCOUNT = 0      # Standart endirim (%)
 
 # ── Verilənlər bazası ─────────────────────────────────────────────────────────
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///smeta_bot.db")
-# PostgreSQL üçün: postgresql+asyncpg://user:password@localhost/smeta_db
+# Railway avtomatik DATABASE_URL təyin edir: postgresql://user:pass@host/db
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 # ── Fayllar ───────────────────────────────────────────────────────────────────
 OUTPUT_DIR = "output"   # Excel və PDF faylları buraya saxlanır

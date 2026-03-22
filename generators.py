@@ -641,7 +641,7 @@ def generate_contract_pdf(smeta: dict) -> str:
            alignment=TA_CENTER, spaceAfter=4)
     ))
     story.append(Paragraph(
-        f"Bakı şəhəri, {smeta['created_at'][:10]}",
+        f"Bakı şəhəri, {str(smeta['created_at'])[:10]}",
         ps("Date", fontName=FONT, fontSize=9, textColor=colors.grey,
            alignment=TA_CENTER, spaceAfter=20)
     ))

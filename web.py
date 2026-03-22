@@ -536,6 +536,15 @@ function closeLB() { document.getElementById('lb').classList.remove('open'); }
 </html>"""
 
 
+def _row(record) -> dict:
+    """asyncpg Record → dict, datetime → ISO string"""
+    d = dict(record)
+    for k, v in d.items():
+        if hasattr(v, 'isoformat'):
+            d[k] = v.isoformat()
+    return d
+
+
 async def get_data_async(smeta_number):
     from database import get_pool
     pool = await get_pool()
@@ -547,7 +556,7 @@ async def get_data_async(smeta_number):
         )
         if not row:
             return None
-        d = dict(row)
+        d = _row(row)
         d["rooms_data"] = json.loads(d["rooms_data"])
         result["smeta"] = d
 
@@ -557,7 +566,7 @@ async def get_data_async(smeta_number):
                 "SELECT * FROM room_progress WHERE smeta_number=$1", smeta_number
             )
             for r in rows:
-                rd = dict(r)
+                rd = _row(r)
                 progress[rd["room_name"]] = rd
         except Exception:
             pass
@@ -570,7 +579,7 @@ async def get_data_async(smeta_number):
                 smeta_number
             )
             for r in rows:
-                p = dict(r)
+                p = _row(r)
                 room = p.get("room_name", "Ümumi")
                 photos_by_room.setdefault(room, []).append(p)
         except Exception:
@@ -582,7 +591,7 @@ async def get_data_async(smeta_number):
                 "SELECT * FROM materials WHERE smeta_number=$1 ORDER BY created_at",
                 smeta_number
             )
-            result["materials"] = [dict(r) for r in rows]
+            result["materials"] = [_row(r) for r in rows]
         except Exception:
             result["materials"] = []
 
@@ -593,7 +602,7 @@ async def get_data_async(smeta_number):
                 smeta_number
             )
             for r in rows:
-                item = dict(r)
+                item = _row(r)
                 room = item.get("room_name", "Ümumi")
                 checklist_by_room.setdefault(room, []).append(item)
         except Exception:
@@ -605,7 +614,7 @@ async def get_data_async(smeta_number):
                 "SELECT * FROM payments WHERE smeta_number=$1 ORDER BY created_at DESC",
                 smeta_number
             )
-            result["payments"] = [dict(r) for r in rows]
+            result["payments"] = [_row(r) for r in rows]
         except Exception:
             result["payments"] = []
 
@@ -614,7 +623,7 @@ async def get_data_async(smeta_number):
                 "SELECT * FROM shopping_list WHERE smeta_number=$1 ORDER BY priority, created_at",
                 smeta_number
             )
-            result["shopping_list"] = [dict(r) for r in rows]
+            result["shopping_list"] = [_row(r) for r in rows]
         except Exception:
             result["shopping_list"] = []
 
