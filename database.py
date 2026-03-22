@@ -248,6 +248,18 @@ async def init_db():
             )
         """)
 
+        # Mövcud cədvələ yeni sütunlar əlavə et (əgər yoxdursa)
+        for col_sql in [
+            "ALTER TABLE smetas ADD COLUMN IF NOT EXISTS special_rooms TEXT DEFAULT '[]'",
+            "ALTER TABLE smetas ADD COLUMN IF NOT EXISTS flooring_data TEXT DEFAULT '{}'",
+            "ALTER TABLE smetas ADD COLUMN IF NOT EXISTS overall_progress INTEGER DEFAULT 0",
+            "ALTER TABLE smetas ADD COLUMN IF NOT EXISTS room_config TEXT DEFAULT ''",
+        ]:
+            try:
+                await db.execute(col_sql)
+            except Exception:
+                pass
+
 
 # ── Smeta funksiyaları ────────────────────────────────────────────────────────
 
@@ -258,8 +270,9 @@ async def save_smeta(data: dict) -> int:
         INSERT INTO smetas
             (smeta_number, telegram_id, client_name, client_phone,
              address, rooms_data, subtotal, margin_pct, discount_pct,
-             vat_pct, total, notes, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+             vat_pct, total, notes, status,
+             special_rooms, flooring_data, room_config, area_m2, price_category)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
         RETURNING id
     """,
         data["smeta_number"],
@@ -275,6 +288,19 @@ async def save_smeta(data: dict) -> int:
         data.get("total", 0),
         data.get("notes", ""),
         "draft",
+        json.dumps(data.get("special_rooms", []), ensure_ascii=False),
+        json.dumps(data.get("flooring_data", {}), ensure_ascii=False),
+        data.get("room_config", ""),
+        data.get("area_m2", 0),
+        data.get("price_category", ""),
+    )
+
+
+async def update_smeta_overall_progress(smeta_number: str, progress: int):
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE smetas SET overall_progress=$1, updated_at=NOW() WHERE smeta_number=$2",
+        progress, smeta_number
     )
 
 
@@ -284,6 +310,12 @@ async def get_smeta(smeta_id: int) -> dict | None:
     if row:
         d = dict(row)
         d["rooms_data"] = json.loads(d["rooms_data"])
+        for f in ("special_rooms", "flooring_data"):
+            if d.get(f):
+                try:
+                    d[f] = json.loads(d[f])
+                except Exception:
+                    d[f] = [] if f == "special_rooms" else {}
         return d
     return None
 
@@ -400,6 +432,12 @@ async def get_smeta_by_number(smeta_number: str) -> dict | None:
     if row:
         d = dict(row)
         d["rooms_data"] = json.loads(d["rooms_data"])
+        for f in ("special_rooms", "flooring_data"):
+            if d.get(f):
+                try:
+                    d[f] = json.loads(d[f])
+                except Exception:
+                    d[f] = [] if f == "special_rooms" else {}
         return d
     return None
 
@@ -513,6 +551,47 @@ async def get_checklist(smeta_number: str) -> list:
         smeta_number
     )
     return [dict(r) for r in rows]
+
+
+async def get_checklist_by_type(smeta_number: str, category: str) -> list:
+    """category: 'elektrik' ya da 'santexnika'"""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT * FROM checklist WHERE smeta_number=$1 AND item LIKE $2 ORDER BY room_name, id",
+        smeta_number, f"{category}:%"
+    )
+    return [dict(r) for r in rows]
+
+
+async def upsert_checklist_item(smeta_number: str, room_name: str, item: str) -> int:
+    """Checklist maddəsi yarat (yoxdursa) — ID qaytar"""
+    pool = await get_pool()
+    return await pool.fetchval("""
+        INSERT INTO checklist (smeta_number, room_name, item)
+        VALUES ($1, $2, $3)
+        ON CONFLICT(smeta_number, room_name, item) DO UPDATE SET smeta_number=EXCLUDED.smeta_number
+        RETURNING id
+    """, smeta_number, room_name, item)
+
+
+async def toggle_checklist_item(item_id: int, user_id: int) -> bool:
+    """Toggle: işaretli ↔ işaretsiz. Yeni vəziyyəti qaytar (True = checked)."""
+    pool = await get_pool()
+    row = await pool.fetchrow("SELECT is_checked FROM checklist WHERE id=$1", item_id)
+    if not row:
+        return False
+    new_state = 0 if row["is_checked"] else 1
+    if new_state:
+        await pool.execute(
+            "UPDATE checklist SET is_checked=1, checked_by=$1, checked_at=NOW() WHERE id=$2",
+            user_id, item_id
+        )
+    else:
+        await pool.execute(
+            "UPDATE checklist SET is_checked=0, checked_by=NULL, checked_at=NULL WHERE id=$1",
+            item_id
+        )
+    return bool(new_state)
 
 
 async def init_checklist_for_smeta(smeta_number: str, rooms: list):
