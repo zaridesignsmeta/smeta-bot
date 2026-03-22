@@ -1252,8 +1252,15 @@ async def cmd_linksmeta(msg: Message, bot: Bot):
 @router.message(F.photo & F.chat.type.in_({"group", "supergroup"}))
 async def group_photo_received(msg: Message, bot: Bot):
     """Qrupda foto gəldikdə avtomatik smetaya əlavə et"""
+    if not msg.photo:
+        return
+
     smeta_number = await get_smeta_by_group(msg.chat.id)
     if not smeta_number:
+        await msg.reply(
+            "⚠️ Bu qrup heç bir smetaya bağlı deyil.\n"
+            "Bağlamaq üçün /linksmeta əmrindən istifadə edin."
+        )
         return
 
     file_id = msg.photo[-1].file_id
