@@ -16,7 +16,10 @@ async def get_pool() -> asyncpg.Pool:
         dsn = os.getenv("DATABASE_URL")
         if not dsn:
             raise RuntimeError("DATABASE_URL mühit dəyişəni təyin edilməyib")
-        _pool = await asyncpg.create_pool(dsn)
+        # Railway postgres:// → postgresql:// çevir
+        if dsn.startswith("postgres://"):
+            dsn = dsn.replace("postgres://", "postgresql://", 1)
+        _pool = await asyncpg.create_pool(dsn, ssl="require")
     return _pool
 
 
