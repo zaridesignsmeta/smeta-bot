@@ -38,6 +38,7 @@ from handlers_payment  import router as payment_router
 from handlers_worker   import router as worker_router
 from handlers_project  import router as project_router
 from handlers_reminder import router as reminder_router
+from handlers_material import router as material_router
 from handlers_report   import router as report_router
 
 router = Router()
@@ -46,6 +47,7 @@ router.include_router(worker_router)
 router.include_router(project_router)
 router.include_router(reminder_router)
 router.include_router(report_router)
+router.include_router(material_router)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
