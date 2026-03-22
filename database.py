@@ -218,6 +218,15 @@ async def init_db():
             )
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS smeta_groups (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id     INTEGER UNIQUE,
+                smeta_number TEXT,
+                created_at   TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
         # Add new columns to smetas if they don't exist yet
         for col_def in [
             "ALTER TABLE smetas ADD COLUMN object_type TEXT",
